@@ -1,0 +1,193 @@
+//CONSTANTES
+#define PIXEL_SIZE shadron_PixelSize;
+#define DIMENSIONS shadron_Dimensions;
+#define PI 3.1415927
+#define GETDIR(tex, a) normalize(texture(tex, a).xy);
+#define LUM(a) dot(a, vec3(.299, .587, .114))
+
+//UNIFORMS
+parameter int K = 10 : range(1, 20);
+parameter int K0 = 7 : range(1, 20);
+parameter int K1 = 6 : range(1, 20);
+parameter float SIGMA_C = 2.9f : range(0.0f, 20.0f, 0.1f);
+parameter float SIGMA_E = 3.5f : range(0.0f, 20.0f, 0.1f);
+parameter float SIGMA_K = 2.5f : range(0.0f, 20.0f, 0.1f);
+parameter float SIGMA_M = 2.8f : range(0.0f, 20.0f, 0.1f);
+parameter float SIGMA_A = 3.2f : range(0.0f, 20.0f, 0.1f);
+parameter float TAU0 = 1.4f : range(0.0f, 10.0f, 0.1f);
+parameter float PHI0 = 2.9f : range(0.0f, 10.0f, 0.1f);
+parameter float EPSILON0 = 0.8f : range(0.0f, 1.0f, 0.1f);
+parameter int STEP = 5 : range(1, 10);
+
+//VARIABLES
+var mat3 sobel=mat3(
+    -1, 0, 1,
+    -2, 0, 2,
+    -1, 0, 1
+);
+
+//INPUT
+image Image = file();
+
+//UTILITARIES FUNCTIONS
+float gaussian(vec2 pos, float sigma){
+    float left=1./(2.*PI*sigma*sigma);
+    float right=exp(-dot(pos, pos)/(2.*sigma*sigma));
+    return left*right;
+}
+
+float luminance(vec3 color) {
+    return dot(color, vec3(0.299f, 0.587f, 0.114f));
+}
+
+//GLSL FUNCTIONS
+template <RAW_IMAGE>
+vec4 structureTensor(vec2 coord) {
+    vec3 gradX = vec3(0.0f), gradY = gradX;
+    
+    for(int i=0;i<3;i++){
+        for(int j=0;j<3;j++){
+            vec2 offsetUV = vec2(i-1, j-1)/DIMENSIONS;
+            vec3 col=texture(RAW_IMAGE, coord+offsetUV).rgb;
+            gradX+=sobel[i][j]*col;
+            gradY+=sobel[j][2-i]*col;
+        }
+    }
+    gradX*=.25;
+    gradY*=.25;
+
+    return vec4(dot(gradX, gradX), dot(gradX, gradY), dot(gradY, gradY), 1.0f);
+}
+
+template <STRUCTURE_TENSOR>
+vec4 edgeTangentFlow(vec2 coord) {
+    vec4 sum = vec4(0.0f);
+
+    for(int i = -K ; i <= K ; i++){
+        for(int j = -K ; j <= K ; j++){
+            vec2 offset=vec2(i, j);
+            float weight=gaussian(offset, SIGMA_C);
+            
+            vec2 offsetUV=offset/DIMENSIONS;
+            vec3 efg=texture(STRUCTURE_TENSOR, coord+offsetUV).rgb;
+            sum+=weight*vec4(efg, 1);
+        }
+    }
+    vec3 efg=sum.rgb/sum.a;
+    
+    //calc eigenvalues
+    float e=efg.x, f=efg.y, g=efg.z;
+    float disc=sqrt(pow(e-g, 2.)+4.*f*f);
+    float l1=.5*(e+g+disc);
+    float l2=.5*(e+g-disc);
+    
+    //calc eigenvectors
+    vec2 v1=vec2(f, l1-e);//maximal, gradient
+    vec2 v2=vec2(l2-g, f);//minimal, tangent
+
+    return vec4(v1, v2);
+}
+
+template <RAW_IMAGE, ETF_MAP>
+vec4 oneDimensionDoG(vec2 coord){
+    vec2 dir=normalize(texture(ETF_MAP, coord).xy);
+
+    vec4 sumA = vec4(0.0f);
+    vec4 sumB = sumA;
+    for(int i = -K ; i <= K ; i++){
+        vec2 offset = dir * float(i);
+        float weightA=gaussian(offset, SIGMA_E);
+        float weightB=gaussian(offset, SIGMA_E*SIGMA_K);
+        
+        vec2 offsetUV=offset/DIMENSIONS;
+        vec4 col=texture(RAW_IMAGE, coord+offsetUV);
+        sumA+=weightA*vec4(col.rgb, 1);
+        sumB+=weightB*vec4(col.rgb, 1);
+    }
+    vec3 meanA=sumA.rgb/sumA.a;
+    vec3 meanB=sumB.rgb/sumB.a;
+    vec3 diff=(1.+TAU0)*meanA-TAU0*meanB;
+    vec4 col = vec4(diff, 1.0f);
+    
+    //posterize
+    return floor(col*float(STEP-1)+.5)/float(STEP-1);
+}
+
+template <ETF_MAP, ONE_D_DOG>
+vec4 edgeAlignedBlur(vec2 coord){
+    vec2 pt0=coord*DIMENSIONS+.5;
+    vec2 pt=pt0;
+    vec2 dir0=GETDIR(ETF_MAP, coord);
+    vec2 dir=dir0;
+    vec4 sum=vec4(0);
+    for(int i=-K0;i<=K0;i++){
+        //middle: init for ahead
+        switch (sign(i)) {
+            case -1:
+                pt -= dir;
+                //break;
+            case 0:
+                pt = pt0;
+                dir = dir0;
+                //break;
+            case 1:
+                pt+=dir;
+                //break;
+        }
+        
+        //sampling
+        float weight=gaussian(pt-pt0, SIGMA_M);
+        vec2 ptUV=pt/DIMENSIONS;
+        vec4 col=texture(ONE_D_DOG, ptUV);
+        sum+=weight*vec4(col.rgb, 1);
+        dir=GETDIR(ETF_MAP ,ptUV);
+    }
+    vec3 mean=sum.rgb/sum.a;
+    
+    float diff=dot(mean, vec3(.299, .587, .114));
+
+    if(diff>EPSILON0) return vec4(1);
+    else return vec4(1.+tanh(PHI0*(diff-EPSILON0)));
+}
+
+template <RAW_IMAGE, ETF_MAP, EDGE_ALIGNED_BLUR>
+vec4 antialiasingFinal(vec2 coord){
+    vec2 pt0=coord*DIMENSIONS+.5;
+    vec2 pt=pt0;
+    vec2 dir0=GETDIR(ETF_MAP, coord);
+    vec2 dir=dir0;
+    vec2 sum=vec2(0);
+
+    for(int i = -K1; i<= K1; i++){
+        switch (sign(i)) {
+            case -1:
+                pt -= dir;
+                //break;
+            case 0:
+                pt = pt0;
+                dir = dir0;
+                //break;
+            case 1:
+                pt+=dir;
+                //break;
+        }
+        float weight = gaussian(pt-pt0, SIGMA_A);
+        vec2 ptUV = pt/DIMENSIONS;
+        vec4 col = texture(EDGE_ALIGNED_BLUR, coord);
+        sum += vec2(col.r, 1.0f)*weight;
+        dir = GETDIR(ETF_MAP, coord);
+    }
+    float mean = sum.x/sum.y;
+
+    vec4 colo = texture(RAW_IMAGE, coord);
+    colo /= max(colo.r, max(colo.g, colo.b));
+    //return (floor(colo*float(STEP-1)+.5)/float(STEP-1)) * (mean);
+    return (colo) * (mean);
+}
+
+//OUTPUT
+image STensor = glsl(structureTensor<Image>, sizeof(Image));
+image ETFMap = glsl(edgeTangentFlow<STensor>, sizeof(Image));
+image DoG = glsl(oneDimensionDoG<Image, ETFMap>, sizeof(Image));
+image EABlur = glsl(edgeAlignedBlur<ETFMap, DoG>, sizeof(Image));
+image Final = glsl(antialiasingFinal<Image, ETFMap, EABlur>, sizeof(Image));

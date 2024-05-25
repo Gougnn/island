@@ -1,0 +1,330 @@
+
+#version 330
+#include "builtin_variables.shadron"
+
+
+//PARAMETERS
+image INPUT = file() : map(repeat), filter(linear);
+
+parameter float K = 1.6f : range(0.f, 5.0f, 0.1f);
+parameter float SIGMA_C = 2.0f : range(0.1f, 20.0f, 0.1f);
+parameter float SIGMA_E = 2.0f : range(0.0f, 10.0f, 0.1f);
+parameter float SIGMA_M = 2.0f : range(0.0f, 20.0f, 0.1f);
+parameter float SIGMA_A = 1.0f : range(0.0f, 10.0f, 0.1f);
+parameter float TAU = 1.0f : range(0.0f, 100.0f, 0.1f);
+parameter float PHI = 1.0f : range(0.0f, 10.0f, 0.1f);
+
+parameter float THRESHOLDS = 2.0f : range(1.0f, 16.0f, 1.0f);
+parameter float THRESHOLD = 50.0f : range(0.0f, 100.0f, 1.0f);
+parameter float THRESHOLD2 = 20.0f : range(0.0f, 100.0f, 1.0f);
+parameter float THRESHOLD3 = 30.0f : range(0.0f, 100.0f, 1.0f);
+parameter float THRESHOLD4 = 40.0f : range(0.0f, 100.0f, 1.0f);
+
+parameter int THRESHOLDING = 0 : range(0, 3);
+
+parameter vec4 INTEGRAL_CONVOLUTION_STEP_SIZE = vec4(vec2(1.0f,1.0f), vec2(1.0f,1.0f));
+
+parameter bool CALC_DIFF_BEFORE_CONVOLUTION = false;
+parameter bool INVERT = false;
+
+
+
+//UTULITARIES
+float gaussian(float sigma, float pos) {
+    return (1.0f / sqrt(2.0f * PI * sigma * sigma)) * exp(-(pos * pos) / (2.0f * sigma * sigma));
+}
+
+float luminance(vec3 color) {
+    return dot(color, vec3(0.299f, 0.587f, 0.114f));
+}
+
+vec4 saturate(vec4 col){
+    vec4 tmp = vec4(
+        max(0.0f, min(1.0f, col.r)),
+        max(0.0f, min(1.0f, col.g)),
+        max(0.0f, min(1.0f, col.b)),
+        max(0.0f, min(1.0f, col.a))
+        );
+    return tmp;
+}
+
+vec3 rgb2xyz(vec3 c) {
+    vec3 tmp;
+    
+    tmp.x = (c.r > 0.04045f) ? pow((c.r + 0.055f) / 1.055f, 2.4f) : c.r / 12.92f;
+    tmp.y = (c.g > 0.04045f) ? pow((c.g + 0.055f) / 1.055f, 2.4f) : c.g / 12.92f,
+    tmp.z = (c.b > 0.04045f) ? pow((c.b + 0.055f) / 1.055f, 2.4f) : c.b / 12.92f;
+
+    const mat3 mat = mat3(
+        0.4124f, 0.3576f, 0.1805f,
+        0.2126f, 0.7152f, 0.0722f,
+        0.0193f, 0.1192f, 0.9505f
+    );
+    
+    return 100.0 * mat * tmp;
+}
+
+vec3 xyz2lab(vec3 c) {
+    vec3 n = c / vec3(95.047f, 100.0f, 108.883f);
+    vec3 v;
+    v.x = (n.x > 0.008856f) ? pow(n.x, 1.0f / 3.0f) : (7.787f * n.x) + (16.0f / 116.0f);
+    v.y = (n.y > 0.008856f) ? pow(n.y, 1.0f / 3.0f) : (7.787f * n.y) + (16.0f / 116.0f);
+    v.z = (n.z > 0.008856f) ? pow(n.z, 1.0f / 3.0f) : (7.787f * n.z) + (16.0f / 116.0f);
+    
+    return vec3((116.0f * v.y) - 16.0f, 500.0f * (v.x - v.y), 200.0f * (v.y - v.z));
+}
+
+vec3 rgb2lab(vec3 c) {
+    vec3 lab = xyz2lab(rgb2xyz(c));
+
+    return vec3(lab.x / 100.0f, 0.5f + 0.5f * (lab.y / 127.0f), 0.5f + 0.5f * (lab.z / 127.0f));
+}
+
+
+//GLSL
+template <RAW_IMAGE>
+vec4 convertToLAB(vec2 uv){
+    return vec4(rgb2lab(texture(RAW_IMAGE, uv).rgb), 1.0f);
+}
+
+template <LAB_IMAGE>
+vec4 calculateEingenvectors(vec2 uv){
+    vec2 d = PIXEL_SIZE;
+    vec3 Sx = (
+        1.0f * texture(LAB_IMAGE, uv + vec2(-d.x, -d.y)).rgb +
+        2.0f * texture(LAB_IMAGE, uv + vec2(-d.x,  0.0)).rgb +
+        1.0f * texture(LAB_IMAGE, uv + vec2(-d.x,  d.y)).rgb +
+        -1.0f * texture(LAB_IMAGE, uv + vec2(d.x, -d.y)).rgb +
+        -2.0f * texture(LAB_IMAGE, uv + vec2(d.x,  0.0)).rgb +
+        -1.0f * texture(LAB_IMAGE, uv + vec2(d.x,  d.y)).rgb
+    ) / 4.0f;
+    
+    vec3 Sy = (
+        1.0f * texture(LAB_IMAGE, uv + vec2(-d.x, -d.y)).rgb +
+        2.0f * texture(LAB_IMAGE, uv + vec2( 0.0, -d.y)).rgb +
+        1.0f * texture(LAB_IMAGE, uv + vec2( d.x, -d.y)).rgb +
+        -1.0f * texture(LAB_IMAGE, uv + vec2(-d.x, d.y)).rgb +
+        -2.0f * texture(LAB_IMAGE, uv + vec2( 0.0, d.y)).rgb +
+        -1.0f * texture(LAB_IMAGE, uv + vec2( d.x, d.y)).rgb
+    ) / 4.0f;
+
+    return vec4(dot(Sx, Sx), dot(Sy, Sy), dot(Sx, Sy), 1.0f);
+}
+
+template <EIGENVECTORS>
+vec4 edgeTangentMapBlurH(vec2 uv){
+    int kernelRadius = int(max(1.0f, floor(SIGMA_C * 2.45f)));
+
+    vec4 col = vec4(0.0f);
+    float kernelSum = 0.0f;
+
+    for (int x = -kernelRadius; x <= kernelRadius; x++){
+        vec4 c = texture(EIGENVECTORS, uv + vec2(x, 0) * PIXEL_SIZE);
+        float gauss = gaussian(SIGMA_C, x);
+
+        col += c * gauss;
+        kernelSum += gauss;
+    }
+
+    return col / kernelSum;
+}
+
+template <ETFMAPBLURH>
+vec4 edgeTangentMapBlurV(vec2 uv){
+    int kernelRadius = int(max(1.0f, floor(SIGMA_C * 2.45f)));
+
+    vec4 col = vec4(0.0f);
+    float kernelSum = 0.0f;
+
+    for (int y = -kernelRadius; y <= kernelRadius; y++){
+        vec4 c = texture(ETFMAPBLURH, uv + vec2(0, y) * PIXEL_SIZE);
+        float gauss = gaussian(SIGMA_C, y);
+
+        col += c * gauss;
+        kernelSum += gauss;
+    }
+    vec3 g = col.rgb / kernelSum;
+
+    float lambda1 = 0.5f * (g.y + g.x + sqrt(g.y * g.y - 2.0f * g.x * g.y + g.x * g.x + 4.0f * g.z * g.z));
+    vec2 d = vec2(g.x - lambda1, g.z);
+
+    return (length(d) > 0.0f) ? vec4(normalize(d), sqrt(lambda1), 1.0f) : vec4(0.0f, 1.0f, 0.0f, 1.0f);
+}
+
+template <ETFMAPBLUR, LAB_IMAGE>
+vec4 differenceOfGaussianH(vec2 uv){
+    vec2 t = texture(ETFMAPBLUR, uv).xy;
+    vec2 n = vec2(t.y, -t.x);
+    vec2 nabs = abs(n);
+    float ds = 1.0f / ((nabs.x > nabs.y) ? nabs.x : nabs.y);
+    n *= PIXEL_SIZE;
+
+    vec2 col = texture(LAB_IMAGE, uv).xx;
+    vec2 kernelSum = vec2(1.0f);
+
+    int kernelSize = int((SIGMA_E * 2 > 1) ? floor(SIGMA_E) : 1);
+
+    for (int x = int(ds); x <= kernelSize; ++x){
+        float gauss1 = gaussian(SIGMA_E, float(x));
+        float gauss2 = gaussian(SIGMA_E * K, float(x));
+
+        float c1 = texture(LAB_IMAGE, uv - x * n).x;
+        float c2 = texture(LAB_IMAGE, uv + x * n).x;
+
+        col.r += (c1 + c2) * gauss1;
+        kernelSum.x += gauss1;
+
+        col.g += (c1 + c2) * gauss2;
+        kernelSum.y += gauss2;
+    }
+
+    col /= kernelSum;
+
+    return vec4(col, (1.0f + TAU) * (col.r * 100.0f) - TAU * (col.g * 100.0), 1.0f);
+}
+
+template <ETFMAPBLUR, DOGH>
+vec4 differenceOfGaussianV(vec2 uv){
+    float kernelSize = SIGMA_M * 2.0f;
+
+    vec2 w = vec2(1.0f);
+    vec3 c = texture(DOGH, uv).rgb;
+    vec2 G = CALC_DIFF_BEFORE_CONVOLUTION ? vec2(c.b, 0.0f) : c.rg;
+
+    vec2 v = texture(ETFMAPBLUR, uv).xy * PIXEL_SIZE;
+    
+    vec2 st0 = uv;
+    vec2 v0 = v;
+
+    for (int d = 1; d < int(kernelSize); ++d){
+        st0 += v0 * INTEGRAL_CONVOLUTION_STEP_SIZE.x;
+        vec3 c = texture(DOGH, st0).rgb;
+        float gauss1 = gaussian(SIGMA_M, float(d));
+
+        if (CALC_DIFF_BEFORE_CONVOLUTION){
+            G.r += gauss1 * c.b;
+            w.x += gauss1;
+        } else{
+            float gauss2 = gaussian(SIGMA_M * K, d);
+
+            G.r += gauss1 * c.r;
+            w.x += gauss1;
+
+            G.g += gauss2 * c.g;
+            w.y += gauss2;
+        }
+
+        v0 = texture(ETFMAPBLUR, st0).xy * PIXEL_SIZE;
+    }
+
+    vec2 st1 = uv;
+    vec2 v1 = v;
+
+    for (int d = 1; d < int(kernelSize); ++d){
+        st1 -= v1 * INTEGRAL_CONVOLUTION_STEP_SIZE.y;
+        vec3 c = texture(DOGH, st1).rgb;
+        float gauss1 = gaussian(SIGMA_M, float(d));
+
+        if (CALC_DIFF_BEFORE_CONVOLUTION){
+            G.r += gauss1 * c.b;
+            w.x += gauss1;
+        } else{
+            float gauss2 = gaussian(SIGMA_M * K, d);
+
+            G.r += gauss1 * c.r;
+            w.x += gauss1;
+
+            G.g += gauss2 * c.g;
+            w.y += gauss2;
+        }
+
+        v1 = texture(ETFMAPBLUR, st1).xy * PIXEL_SIZE;
+    }
+
+    G /= w;
+
+    float D = 0.0f;
+    if (CALC_DIFF_BEFORE_CONVOLUTION){
+        D = G.x;
+    } else {
+        D = (1.0f + TAU) * (G.r * 100.0f) - TAU * (G.g * 100.0f);
+    }
+
+    vec4 col = vec4(0.0f);
+
+    if (THRESHOLDING == 1){
+        col.r = (D >= THRESHOLD) ? 1.0f : 1.0f + tanh(PHI * (D - THRESHOLD));
+        col.g = (D >= THRESHOLD2) ? 1.0f : 1.0f + tanh(PHI * (D - THRESHOLD2));
+        col.b = (D >= THRESHOLD3) ? 1.0f : 1.0f + tanh(PHI * (D - THRESHOLD3));
+        col.a = (D >= THRESHOLD4) ? 1.0f : 1.0f + tanh(PHI * (D - THRESHOLD4));
+    } else if (THRESHOLDING == 2){
+        float a = 1.0f / THRESHOLDS;
+        float b = THRESHOLD / 100.0f;
+        float x = D / 100.0f;
+
+        col = (x >= b) ? vec4(1.0f) : vec4(a * floor((pow(x, PHI) - (a * b / 2.0f)) / (a * b) + 0.5f));
+    } else if (THRESHOLDING == 3){
+        float x = D / 100.0f;
+        float qn = floor(x * float(THRESHOLDS) + 0.5f) / float(THRESHOLDS);
+        float qs = smoothstep(-2.0f, 2.0f, PHI * (x - qn) * 10.0f) - 0.5f;
+                    
+        col = vec4(qn + qs / float(THRESHOLDS));
+    } else {
+        col = vec4(vec3(D/ 100.0f), 1.0f);
+    }
+
+    if (INVERT){
+        col = 1.0f - col;
+    }
+    return saturate(col);
+}
+
+template <ETFMAPBLUR, DOG>
+vec4 antialiasing(vec2 uv){
+    float kernelSize = SIGMA_A * 2;
+
+    vec4 G = texture(DOG, uv);
+    float w = 1.0f;
+
+    vec2 v = texture(ETFMAPBLUR, uv).xy * PIXEL_SIZE;
+
+    vec2 st0 = uv;
+    vec2 v0 = v;
+
+    for (int d = 1; d < int(kernelSize); ++d){
+        st0 += v0 * INTEGRAL_CONVOLUTION_STEP_SIZE.z;
+        vec4 c = texture(DOG, st0);
+        float gauss1 = gaussian(SIGMA_A, float(d));
+
+        G += gauss1 * c;
+        w += gauss1;
+
+        v0 = texture(ETFMAPBLUR, st0).xy * PIXEL_SIZE;
+    }
+
+    vec2 st1 = uv;
+    vec2 v1 = v;
+
+    for (int d = 1; d < int(kernelSize); ++d){
+        st1 += v1 * INTEGRAL_CONVOLUTION_STEP_SIZE.w;
+        vec4 c = texture(DOG, st1);
+        float gauss1 = gaussian(SIGMA_A, float(d));
+
+        G += gauss1 * c;
+        w += gauss1;
+
+        v1 = texture(ETFMAPBLUR, st1).xy * PIXEL_SIZE;
+    }
+    return G / w;
+}
+
+
+//OUTPUT
+image RGB_TO_LAB = glsl(convertToLAB<INPUT>, sizeof(INPUT));
+image EIGENVECTOR_MAP = glsl(calculateEingenvectors<RGB_TO_LAB>, sizeof(INPUT));
+image EDGE_TANGENT_FLOW_MAP_1 = glsl(edgeTangentMapBlurH<EIGENVECTOR_MAP>, sizeof(INPUT));
+image EDGE_TANGENT_FLOW_MAP_2 = glsl(edgeTangentMapBlurV<EDGE_TANGENT_FLOW_MAP_1>, sizeof(INPUT));
+image GAUSSIAN_1 = glsl(differenceOfGaussianH<EDGE_TANGENT_FLOW_MAP_2, RGB_TO_LAB>, sizeof(INPUT));
+image GAUSSIAN_2 = glsl(differenceOfGaussianV<EDGE_TANGENT_FLOW_MAP_2, GAUSSIAN_1>, sizeof(INPUT));
+image SMOOTH = glsl(antialiasing<EDGE_TANGENT_FLOW_MAP_2, GAUSSIAN_2>, sizeof(INPUT));
+//image DIFFERENCE_OF_GAUSSIANS

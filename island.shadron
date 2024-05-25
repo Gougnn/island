@@ -1,0 +1,330 @@
+#version 330
+
+#include <variables>
+#include <blendmodes>
+#include "/libraries/mathnoise.shadron"
+
+#define ROTATION false
+#define UP       vec3(0.0f, 0.0f, 1.0f)
+#define DOWN     vec3(0.0f, 0.0f, -1.0f)
+
+const mat2 ROTATION2D = mat2(0.8, -0.6,
+                             0.6,  0.8);
+
+const mat3 ROTATION3D = mat3(0.85, -0.64, 0.0,
+                             0.64,  0.85, 0.0,
+                             0.0,  0.0, 1.0);
+
+parameter float noiseSeed        = 1.0f       : range(-10.0f, 10.0f);
+parameter float noiseRandomness  = 1.0f       : range(0.0f, 1.0f);
+parameter float noiseBlend       = 1.0f       : range(0.0f, 1.0f);
+parameter float noiseHeight      = 2.0f       : range(0.01, 5.0f);
+parameter int   noiseOctaves     = 7          : range(1, 10);
+parameter float noisePersistence = 0.35f      : range(0.0f, 1.0f);
+parameter float noiseFrequency   = 2.1f       : range(0.0f, 5.0f);
+
+parameter vec2  viewOffset       = vec2(0.0f) : range(vec2(-25.0f), vec2(25.0f));
+parameter float viewRotation     = 0.0f       : range(-PI, PI);
+parameter float viewScale        = 20.0f      : range(0.01f, 20.0f);
+
+parameter vec2  islandOffset       = vec2(0.0f) : range(vec2(-5.0f), vec2(5.0f));
+parameter float islandScale        = 3.0f      : range(0.01f, 20.0f);
+parameter float islandBlend        = 0.5f       : range(0.0f, 1.0f);
+
+var vec2 MOUSE_POSITION;
+
+//.     . CAPTURE MOUSE POSITION .     .
+
+
+void getMouse(vec2 _mouse){
+    MOUSE_POSITION = _mouse;
+}
+
+event mouse_position() = getMouse;
+
+watch MOUSE_POSITION - 0.5f;
+
+
+
+//### .     . UTILITARIES .     .
+
+float remap( float _value, float _fromMin, float _fromMax, float _toMin, float _toMax )
+{
+	return _toMin + (_value - _fromMin) * (_toMax - _toMin) / (_fromMax - _fromMin);
+}
+
+float smoothmin(float _a, float _b, float _k)
+{
+    float h = clamp(0.5 + 0.5*(_a-_b)/_k, 0.0, 1.0);
+    return mix(_a, _b, h) - _k*h*(1.0-h);
+}
+
+vec2 smoothmin(vec2 _a, vec2 _b, float _k)
+{
+    return vec2(smoothmin(_a.x, _b.x, _k),
+                smoothmin(_a.y, _b.y, _k));
+}
+
+vec3 smoothmin(vec3 _a, vec3 _b, float _k)
+{
+    return vec3(smoothmin(_a.x, _b.x, _k),
+                smoothmin(_a.y, _b.y, _k),
+                smoothmin(_a.z, _b.z, _k));
+}
+
+float blend( float a, float b, float fac )
+{
+    return clamp((a + fac * (2.0f * (b - 1.0f))), -0.1, 1);
+}
+
+float getFalloff( vec2 _uv )
+{
+    return 1.0f - pow(length(_uv), 2);
+}
+
+        //|  DRAW FUNCTIONS
+
+vec3 drawCenter(vec2 _uv, float _size, vec3 _dotCol, vec3 _col)
+{
+    return (length(_uv*10.0f - 5.0f)>_size) ? _col : _dotCol;
+}
+
+
+        //|  TRANSFORM UV 
+vec2 transformPoint( vec2 _p, float _s, float _r, vec2 _t )
+{
+    mat3 
+        rot =   mat3(cos(_r), -sin(_r), 0.0f,
+                     sin(_r),  cos(_r), 0.0f,
+                     0.0    ,  0.0    , 1.0),
+        trans = mat3(1.0, 0.0, -(_t.x),
+                     0.0, 1.0, -(_t.y),
+                     0.0, 0.0, 1.0   );
+
+    
+    return (vec3(_p*_s, 1.0f) * rot * trans).xy;
+}
+
+
+        //|  NOiSE GENERATION 
+
+//float voronoise( vec2 _p, float _randomness, float _blend )
+//{
+//	float k = 1.0f+63.0f*pow(1.0f-_blend,6.0f);
+//
+//    vec2 
+//        i = floor(_p),
+//        f = fract(_p),
+//	    a = vec2(0.0f,0.0f);
+//
+//    for( int y=-2; y<=2; y++ ){
+//        for( int x=-2; x<=2; x++ ){
+//                vec2  g = vec2( x, y );
+//	        	vec3  o = hash32( i + g )*vec3(_randomness,_randomness,1.0f);
+//	        	vec2  d = g - f + o.xy;
+//	        	float w = pow( 1.0-smoothstep(0.0f,1.414f,length(d)), k );
+//	        	a += vec2(o.z*w,w);
+//        }
+//    }
+//    return a.x/a.y;
+//}
+//
+//float fbm( vec2 _p, float _randomness , float _blend )
+//{
+//    vec2 p0 = _p;
+//    float 
+//        a = 0.5f,
+//        f = 1.0f,
+//        aSum = 0.0f,
+//        res = 0.0f;
+//    
+//    for ( int i=0; i<octaves; i++ ){
+//        float n = voronoise(p0, _randomness, _blend);
+//        res += n * a;
+//        
+//        aSum += a;
+//        a *= octavePersistence;
+//        f *= 2.0f;
+//        p0 *= frequency;
+//        if (ROTATION) p0 *= ROTATION2D;
+//    }
+//    return res/aSum;
+//}
+
+float voronoise( vec3 _p, float _randomness, float _blend )
+{
+	float k = 1.0f+63.0f*pow(1.0f-_blend,6.0f);
+
+    vec3 
+        i = floor(_p),
+        f = fract(_p);
+    
+	vec2 a = vec2(0.0,0.0);
+
+    for( int z=-2; z<=2; z++ ){
+        for( int y=-2; y<=2; y++ ){
+            for( int x=-2; x<=2; x++ ){
+                vec3  g = vec3( x, y , z );
+	        	vec4  o = hash43( i + g )*vec4(_randomness,_randomness,1.0, 1.0);
+	        	vec3  d = g - f + o.xyz;
+	        	float w = pow( 1.0-smoothstep(0.0,1.414,length(d)), k );
+	        	a += vec2(o.w*w,w);
+            }
+        }
+    }
+    return a.x/a.y;
+}
+
+float fbm( vec3 _p, float _randomness , float _blend, 
+           int _octaves, float _persistence, float _frequency )
+{
+    vec3 p0 = _p;
+    float 
+        a = 0.5f,
+        f = 1.0f,
+        aSum = 0.0f,
+        res = 0.0f;
+    
+    for ( int i=0; i<_octaves; i++ ){
+        float n = voronoise(p0, _randomness, _blend);
+        n = n*n*(3.0-2.0*n);
+        res += n * a;
+        
+        aSum += a;
+        a *= _persistence;
+        f *= 2.0;
+        if (ROTATION) p0 *= ROTATION3D;
+        p0 *= _frequency;
+    }
+    return res/aSum;
+}
+
+
+        //|  NOiSE INITIALIZATION 
+
+struct noiseDATA
+{
+    vec3 height;
+    vec3 normal;
+};
+
+glsl noiseDATA NOISE;
+glsl noiseDATA SHADOW;
+
+template <NOISE_STRUCT>
+void getHeight( vec3 _p, float _randomness, float _blend, float _height,
+                int _octaves, float _persistence, float _frequency )
+{
+    vec3
+        offset = vec3(PIXEL_SIZE, 0.0f);
+    vec2
+        noiseUV  = transformPoint(_p.xy - 0.5f, viewScale, viewRotation, viewOffset),
+        islandUV = transformPoint(_p.xy - 0.5f, islandScale * 0.1f, 0.0f, islandOffset);
+//    NOISE_STRUCT.height.x = fbm(
+//                            vec3(_p.xy, _p.z)
+//                            , _randomness, _blend, _octaves, _persistence, _frequency);//*falloff(uv);
+//    NOISE_STRUCT.height.y = fbm(
+//                                    vec3(offsetX, _p.z),_randomness, _blend, 
+//                                    _octaves, _persistence, _frequency);//*falloff(offsetX);
+//    NOISE_STRUCT.height.z = fbm(
+//                                    vec3(offsetY, _p.z),_randomness, _blend, 
+//                                    _octaves, _persistence, _frequency);//*falloff(offsetY);
+    float 
+        falloff = 1.0f - pow(length(islandUV), 2),
+        height  = fbm(vec3(_p.xy, _p.z), _randomness, _blend,
+                      _octaves, _persistence, _frequency),
+        dx      = fbm(vec3(_p.xy + offset.xz * _height, _p.z),_randomness, _blend, 
+                      _octaves, _persistence, _frequency),
+        dy      = fbm(vec3(_p.xy + offset.zy * _height, _p.z),_randomness, _blend, 
+                      _octaves, _persistence, _frequency);
+    
+    NOISE.height = vec3(blend(height, falloff, islandBlend),
+                        blend(dx, 1.0f - pow(length(islandUV + offset.xz * height), 2), islandBlend),
+                        blend(dy, 1.0f - pow(length(islandUV + offset.zy * height), 2), islandBlend));
+}
+
+template <NOISE_STRUCT>
+void getNormal()
+{
+    vec3
+        va = normalize(vec3(PIXEL_SIZE.x, 0.0, NOISE_STRUCT.height.y - NOISE_STRUCT.height.x)), //Tangential Space
+        vb = normalize(vec3(0.0, PIXEL_SIZE.y, NOISE_STRUCT.height.z - NOISE_STRUCT.height.x)); //Binormal Space
+    
+    NOISE_STRUCT.normal = vec3(cross(va, vb));    
+}
+
+template <NOISE_STRUCT>
+void initializeNoise( vec3 _p, float _randomness, float _blend, float _height, 
+                      int _octaves, float _persistence, float _frequency )
+{
+    _p = vec3(transformPoint(_p.xy - 0.5f, viewScale, viewRotation, viewOffset), _p.z);
+    getHeight<NOISE_STRUCT>(_p, _randomness, _blend, _height, _octaves, _persistence, _frequency);
+    getNormal<NOISE_STRUCT>();
+}
+
+
+
+//#         .     . GLSL .     .      
+
+vec3 terrain( vec2 uv )
+{   
+    initializeNoise<NOISE>(vec3(uv, noiseSeed), noiseRandomness, noiseBlend, noiseHeight, 
+                                noiseOctaves, noisePersistence, noiseFrequency);
+
+
+    vec2 mousePosition = (MOUSE_POSITION * 2.0f - 1.0f)*10.0f;
+    vec3 sunPosition = normalize(vec3(mousePosition.x, mousePosition.y, 1.0f));
+
+    float 
+        shadowSelf = dot(NOISE.normal, sunPosition),
+        terrainQuantize = floor(NOISE.height.x * 8.0)/8.0f;
+
+    vec3 
+        terrainCol = mix(vec3(0.90f, 0.78f, 0.47f), 
+                        vec3(0.00f, 0.55f, 0.16f), 
+                        (terrainQuantize)),
+        col = mix(terrainCol*vec3(0.26f, 0.64f, 1.00f), terrainCol, clamp(shadowSelf, 0.0f, 1.0f));
+
+
+
+    return vec3(drawCenter(uv, 0.04, vec3(1,0,0), vec3(NOISE.height.x)));
+    return vec3(NOISE.height.x);
+}
+
+vec3 height( vec2 uv )
+{
+    initializeNoise<NOISE>(vec3(uv, noiseSeed), noiseRandomness, noiseBlend, noiseHeight, 
+                                noiseOctaves, noisePersistence, noiseFrequency);
+
+    return vec3(NOISE.height.x);
+}
+
+vec3 normal( vec2 uv )
+{
+    initializeNoise<NOISE>(vec3(uv, noiseSeed), noiseRandomness, noiseBlend, noiseHeight, 
+                                noiseOctaves, noisePersistence, noiseFrequency);
+
+    return vec3(NOISE.normal);
+}
+
+
+
+//##        .     . OUTPUTS .     .       
+
+image HEIGHT = glsl(height, ivec2(512));
+image NORMAL = glsl(normal, ivec2(512));
+
+
+
+
+
+
+
+
+
+parameter float TEST : hidden();
+
+
+//#         .     . TEST ZONE .     .
+
+

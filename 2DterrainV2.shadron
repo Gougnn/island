@@ -1,0 +1,144 @@
+#version 330
+#include <variables>
+#include <noise>
+
+#define CANVAS vec2(1024, 1024)
+#define OFFSET vec3(-0.5f, 0.0f, 0.5f)
+#define OCTAVES 7
+#define OCTAVES_DIST 2.0
+#define ROUGHNESS 0.6
+
+const vec3 mountainColor = vec3(0.60f, 0.55f, 0.55f);
+const vec3 treeColor = vec3(0.839,0.714,0.62);
+const vec3 grassColor = vec3(0.596,0.678,0.353);
+const vec3 sandColor = vec3(0.278,0.463,0.271);
+const vec3 seaColor = vec3(0.384,0.651,0.663);
+
+const float grassLevel = 0.05f;
+const float treeLevel = 0.25f;
+const float mountainLevel = 0.55f;
+const float snowLevel = 0.70f;
+
+parameter float seaLevel = 0.50f : range(0.0f, 1.0f);
+
+parameter float scale = 0.5f : range(0.0f, 10.0f);
+parameter vec2 location = vec2(6.3f, 10.0f) : range(vec2(-10.0f, -10.0f), vec2(10.0f, 10.0f), 0.1f);
+
+parameter float randomness = 1.0f : range(0.0f, 1.0f);
+parameter float blend = 0.6f : range(0.0f, 1.0f);
+
+parameter float stepSize = 1.0f : range(0.0f, 2.0f, 0.1f);
+parameter int stepNumber = 200 : range(1, 100);
+
+watch MOUSE;
+
+
+//UTILITARIES FUNCTIONS
+float remap(float value, float fromMin, float fromMax, float toMin, float toMax){
+	return toMin + (value - fromMin) * (toMax - toMin) / (fromMax - fromMin);
+}
+
+vec3 getNormal(mat3 heightOffset, float scaleOffset, float maxHeight){
+    vec3 n;
+    n.x = maxHeight * (heightOffset[2][2] - heightOffset[2][0] + 2.0f * (heightOffset[1][2] - heightOffset[1][0]) + heightOffset[0][2] - heightOffset[0][0]);
+    n.y = maxHeight * (heightOffset[0][0] - heightOffset[2][0] + 2.0f * (heightOffset[0][1] - heightOffset[2][1]) + heightOffset[0][2] - heightOffset[2][2]);
+    n.z = scaleOffset;
+
+    return normalize(n);
+}
+
+
+//GLSL
+vec4 island(vec2 uv){
+    vec3 sunDirection = vec3(vec2(MOUSE.x, -MOUSE.y*2.0), MOUSE.z * 50.0f) * PIXEL_SIZE.x *2.0f;
+//    vec3 sunDirection = vec3(sin(TIME * 0.5f), 0.05f, 1.0f) * 10.0;
+
+    vec3 col;
+    mat3 noise = mat3(
+        vec3(
+            fbmCellNoise((uv + OFFSET.xz * PIXEL_SIZE) * scale * 10.0f + location, OCTAVES, OCTAVES_DIST, ROUGHNESS-0.15f, randomness, blend),
+            fbmCellNoise((uv + OFFSET.yz * PIXEL_SIZE) * scale * 10.0f + location, OCTAVES, OCTAVES_DIST, ROUGHNESS-0.15f, randomness, blend),
+            fbmCellNoise((uv + OFFSET.zz * PIXEL_SIZE) * scale * 10.0f + location, OCTAVES, OCTAVES_DIST, ROUGHNESS-0.15f, randomness, blend)
+        ),
+        vec3(
+            fbmCellNoise((uv + OFFSET.xy * PIXEL_SIZE) * scale * 10.0f + location, OCTAVES, OCTAVES_DIST, ROUGHNESS-0.15f, randomness, blend),
+            fbmCellNoise((uv + OFFSET.yy * PIXEL_SIZE) * scale * 10.0f + location, OCTAVES, OCTAVES_DIST, ROUGHNESS, randomness, blend),
+            fbmCellNoise((uv + OFFSET.zy * PIXEL_SIZE) * scale * 10.0f + location, OCTAVES, OCTAVES_DIST, ROUGHNESS-0.15f, randomness, blend)
+        ),
+        vec3(
+            fbmCellNoise((uv + OFFSET.xx * PIXEL_SIZE) * scale * 10.0f + location, OCTAVES, OCTAVES_DIST, ROUGHNESS-0.15f, randomness, blend),
+            fbmCellNoise((uv + OFFSET.yx * PIXEL_SIZE) * scale * 10.0f + location, OCTAVES, OCTAVES_DIST, ROUGHNESS-0.15f, randomness, blend),
+            fbmCellNoise((uv + OFFSET.zx * PIXEL_SIZE) * scale * 10.0f + location, OCTAVES, OCTAVES_DIST, ROUGHNESS-0.15f, randomness, blend)
+        )
+    );
+
+    vec3 normal = getNormal(noise, scale, 200.0f);
+
+    float seaMask = (noise[1][1] > seaLevel) ? 0.0f : 1.0f;
+    float sandMask = (noise[1][1] > remap(grassLevel, 0.0f, 1.0f, seaLevel, 1.0f)) ? 0.0f : 1.0f;
+
+    //COLOR
+        //LAND
+    vec3 land;
+    float sand = remap(grassLevel, 0.0f, 1.0f, seaLevel, 1.0f);
+	float grass = remap(treeLevel, 0.0f, 1.0f, seaLevel, 1.0f);
+	float tree = remap(mountainLevel, 0.0f, 1.0f, seaLevel, 1.0f);
+	float snow = remap(snowLevel, 0.0f, 1.0f, seaLevel, 1.0f);
+    float steepness = (dot(normal, vec3(0.0f, 0.0f, 1.0f)) > 0.0) ? 0.0f : 1.0f;
+
+    if (noise[1][1] > snow){
+		land = vec3(1.0f);
+	} else if (noise[1][1] > tree){
+		land = mountainColor;
+	} else if (noise[1][1] > grass){
+		land = sandColor;
+	} else if (noise[1][1] > sand){
+		land = grassColor;
+	} else {
+		land = treeColor;
+	}
+    if (steepness > 0.5 && noise[1][1] > seaLevel){
+        land = mountainColor;
+    }
+    
+        //SEA
+    float shallowWater = (seaMask < 0.5f) ? 0.0f : clamp(remap(noise[1][1], 0.0f, seaLevel, 8.0f, 0.3f), 0.0f, 1.0f);
+    
+    //SHADOW
+        //SELFSHADOW
+    float selfShadow = (seaMask < 0.5f) ? clamp(dot(sunDirection, normal), 0.0f, 0.8f) * (1.0f - clamp(sandMask - steepness, 0.0f, 1.0f) * 0.8) : clamp(dot(sunDirection, normal), 0.0f, 0.02f);
+
+
+
+    //COMPOSITING
+    col = mix(land, seaColor, shallowWater);
+    col = mix(col, col * vec3(0.2f, 0.1f, 0.7f), (selfShadow * 0.5f));
+
+    float  tmp = pow(dot(normal, vec3(0.0f, 0.0f, 1.0f)), 1.5f);
+
+    return vec4(col, 1.0f);
+//    return vec4(vec3(noise[1][1]), 1.0f);
+}
+
+
+template <color_map>
+vec3 clouds(vec2 uv){
+    float noise1 = fbmCellNoise(uv * 10.0f + vec2(TIME * 1.0f, 100.0f), 2, 2.0f, 0.5f, 1.0f, 1.0f);
+    float noise2 = fbmCellNoise(uv * 10.0f + vec2(0.0f, 0.0f), 2, 2.0f, 0.5f, 1.0f, 1.0f);
+
+    vec2 uvMove = vec2(noise1, noise2);
+
+    float cloud = fbmCellNoise(uvMove * 1.0f * vec2(0.5f, 1.0f) + vec2(sin(TIME) * 0.05f, 0.0f), 5, 2.0f, 0.8f, 1.0f, 1.0f);
+
+//    cloud = (cloud > 0.59f) ? 1.0f : 0.0f;
+
+    cloud = clamp(remap(cloud, 0.0f, 1.0f, -8.0f, 6.0f), 0.0f, 0.8f);
+    
+    vec3 col = mix(texture(color_map, uv).rgb, vec3(1.0f), 1.0f - cloud);
+
+    return vec3(col);
+}
+
+
+animation COLOR = glsl(island, CANVAS) : map(clamp_to_border, vec4(0.0f)), filter(nearest);
+//animation CLOUDS = glsl(clouds<COLOR>, CANVAS) : filter(nearest);

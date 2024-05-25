@@ -1,0 +1,192 @@
+#include <worley>
+#include <variables>
+
+#define CANVAS vec2(512, 512)
+
+parameter float seaLevel = 0.18f : range(0.0f, 1.0f, 0.01f);
+parameter float grassLevel = 0.25f : range(0.0f, 1.0f, 0.01f);
+parameter float treeLevel = 0.50f : range(0.0f, 1.0f, 0.01f);
+parameter float mountainLevel = 0.60f : range(0.0f, 1.0f, 0.01f);
+parameter float snowLevel = 0.70f : range(0.0f, 1.0f, 0.01f);
+parameter float stepSize = 1.0f : range(0.0f, 2.0f, 0.1f);
+parameter int stepNumber = 200 : range(1, 100);
+
+parameter float scale = 1.0f : range(0.0f, 10.0f);
+parameter int octaves = 5 : range(1, 10);
+parameter vec2 offset = vec2(0.0f, 0.0f) : range(vec2(-10.0f, -10.0f), vec2(10.0f, 10.0f), 0.1f);
+
+parameter float strength = 1.0 : range(0.0f, 1.0f);
+
+
+const vec3 mountainColor = vec3(0.60f, 0.55f, 0.55f);
+const vec3 treeColor = vec3(1.00f, 0.85f, 0.70f);
+const vec3 grassColor = vec3(0.60f, 0.80f, 0.25f);
+const vec3 sandColor = vec3(0.30f, 0.60f, 0.10f);
+const vec3 seaColor = vec3(0.30f, 0.75f, 0.9);
+
+
+float random (in vec2 st) {
+    return fract(sin(dot(st.xy, vec2(12.9898f,78.233f))) * 43758.5453123f);
+}
+
+float remap(float value, float fromMin, float fromMax, float toMin, float toMax){
+	return toMin + (value - fromMin) * (toMax - toMin) / (fromMax - fromMin);
+}
+
+float linearLightBlend(float base, float blend){
+	return (blend > 0.5f) ? (base + 2.0f * (blend -0.5f)) : (base + 2.0f * blend - 1.0f);
+}
+
+float noise(in vec2 st){
+    vec2 i = floor(st);
+    vec2 f = fract(st);
+
+    float a = random(i);
+    float b = random(i + vec2(1.0f, 0.0f));
+    float c = random(i + vec2(0.0f, 1.0f));
+    float d = random(i + vec2(1.0f, 1.0f));
+
+    vec2 u = f * f * (3.0f - 2.0f * f);
+
+    return mix(a, b, u.x) +
+            (c - a)* u.y * (1.0f - u.x) +
+            (d - b) * u.x * u.y;
+}
+
+float fbm(in vec2 st){
+    float value = 0.0f;
+    float amplitude = 0.5f;
+    float frequency = 0.0f;
+    
+    for (int i = 0; i < octaves; i++) {
+        value += amplitude * noise(st);
+        st *= 2.0f;
+        amplitude *= 0.5f;
+    }
+    return value;
+}
+
+
+template <height_map>
+vec3 colorizeLand(vec2 uv){
+	float height = texture(height_map, uv).x;
+	vec3 col;
+
+	vec3 land;
+	
+	float sand = remap(grassLevel, 0.0f, 1.0f, seaLevel, 1.0f);
+	float grass = remap(treeLevel, 0.0f, 1.0f, seaLevel, 1.0f);
+	float tree = remap(mountainLevel, 0.0f, 1.0f, seaLevel, 1.0f);
+	float snow = remap(snowLevel, 0.0f, 1.0f, seaLevel, 1.0f);
+
+	if (height > snow){
+		land = vec3(1.0f);
+	} else if (height > tree){
+		land = mountainColor;
+	} else if (height > grass){
+		land = sandColor;
+	} else if (height > sand){
+		land = grassColor;
+	} else {
+		land = treeColor;
+	}
+	col = (height > seaLevel) ? land : seaColor;
+	
+	return col;
+}
+
+template <height_map, color_map, normal_map>
+vec3 shadowCalc(vec2 uv){
+	float selfShadow = texture(normal_map, uv).r;
+	float height = texture(height_map, uv).x;
+	height = max(seaLevel, height);
+	
+	vec3 sunPos = vec3(vec2(MOUSE.x, -MOUSE.y*2.0)*PIXEL_SIZE, -MOUSE.z * 5.0f * PIXEL_SIZE + 1.0f)*2.0f;
+	vec3 p = vec3(uv, height);
+
+	vec3 stepDir = (sunPos)/stepNumber;
+
+	float inShadow = 0.0f;
+
+	for (float i = 0.0f; i < stepNumber; ++i){
+		p += stepDir;
+
+		float h = texture(height_map, p.xy).r;
+
+		if (h > p.z){
+			inShadow = 1.0f;
+			break;
+		}
+		if (p.z > 2.0f){
+			break;
+		}
+	}
+
+	vec3 island = texture(color_map, uv).rgb;
+
+
+
+	vec3 shadow = island * vec3(0.7f, 0.7f, 0.8f);
+	vec3 col = mix(island, shadow, inShadow + selfShadow/2.0f);
+
+	return col;
+}
+
+vec3 heightMap(vec2 uv){
+	float noise = fbm((uv - vec2(0.5f, 0.5f)) * scale * 10.0f + offset);
+
+	vec4 noiseFC = vec4(
+		fbm((uv + vec2(-0.5f, -0.5f) * PIXEL_SIZE - vec2(0.5f, 0.5f)) * scale * 10.0f + offset),
+		fbm((uv + vec2( 0.5f, -0.5f) * PIXEL_SIZE - vec2(0.5f, 0.5f)) * scale * 10.0f + offset),
+		fbm((uv + vec2(-0.5f,  0.5f) * PIXEL_SIZE - vec2(0.5f, 0.5f)) * scale * 10.0f + offset),
+		fbm((uv + vec2( 0.5f,  0.5f) * PIXEL_SIZE - vec2(0.5f, 0.5f)) * scale * 10.0f + offset)
+	);
+
+	float maxD = (CANVAS.x/2.0f) * (CANVAS.y/2.0f);
+	float dx = (CANVAS.x/2.0f) - uv.x * DIMENSIONS.x;
+	float dy = (CANVAS.y/2.0f) - uv.y * DIMENSIONS.y;
+
+	float dsq = (dx * dx) + (dy * dy);
+
+	float falloff = remap(dsq, 0.0f, maxD, 0.5f, 0.0f);
+
+    return vec3((linearLightBlend(noise, falloff)));
+}
+
+template <height_map>
+vec3 normalMap(vec2 uv){
+	vec3 offset = vec3(-1.0f, 0.0f, 1.0f);
+
+
+	float f0 = max(remap(grassLevel, 0.0f, 1.0f, seaLevel, 1.0f), texture(height_map, uv + offset.xz * PIXEL_SIZE).r) * CANVAS.y;
+	float f1 = max(remap(grassLevel, 0.0f, 1.0f, seaLevel, 1.0f), texture(height_map, uv + offset.yz * PIXEL_SIZE).r) * CANVAS.y;
+	float f2 = max(remap(grassLevel, 0.0f, 1.0f, seaLevel, 1.0f), texture(height_map, uv + offset.zz * PIXEL_SIZE).r) * CANVAS.y;
+	float f3 = max(remap(grassLevel, 0.0f, 1.0f, seaLevel, 1.0f), texture(height_map, uv + offset.xy * PIXEL_SIZE).r) * CANVAS.y;
+	float f4 = max(remap(grassLevel, 0.0f, 1.0f, seaLevel, 1.0f), texture(height_map, uv + offset.yy * PIXEL_SIZE).r) * CANVAS.y;
+	float f5 = max(remap(grassLevel, 0.0f, 1.0f, seaLevel, 1.0f), texture(height_map, uv + offset.zy * PIXEL_SIZE).r) * CANVAS.y;
+	float f6 = max(remap(grassLevel, 0.0f, 1.0f, seaLevel, 1.0f), texture(height_map, uv + offset.xx * PIXEL_SIZE).r) * CANVAS.y;
+	float f7 = max(remap(grassLevel, 0.0f, 1.0f, seaLevel, 1.0f), texture(height_map, uv + offset.yx * PIXEL_SIZE).r) * CANVAS.y; 
+	float f8 = max(remap(grassLevel, 0.0f, 1.0f, seaLevel, 1.0f), texture(height_map, uv + offset.yz * PIXEL_SIZE).r) * CANVAS.y; 
+
+
+//	[6][7][8]	//	[0][1][2]
+//	[3][4][5]	//	[3][4][5]
+//	[0][1][2]	//	[6][7][8]
+
+	vec3 n;
+
+	n.x = 0.5f * +(f2 - f0 + 2.0f * (f5 - f3) + f8 - f6);
+	n.y = 0.5f * -(f6 - f0 + 2.0f * (f7 - f1) + f8 - f2);
+	n.z = 0.0f;
+
+	n = normalize(n) * 1.0f;
+
+	vec3 sunPos = vec3(vec2(MOUSE.x, -MOUSE.y*2.0)*PIXEL_SIZE, -MOUSE.z * 5.0f * PIXEL_SIZE + 1.0f)*2.0f;
+
+	return vec3(clamp(dot(sunPos, n), 0.0f, 1.0f));
+}
+  
+image NOISE = glsl(heightMap, CANVAS) : map(clamp_to_border, vec4(0.0f));
+image COLOR = glsl(colorizeLand<NOISE>, CANVAS) : hidden(true);
+image NORMAL = glsl(normalMap<NOISE>, CANVAS);
+animation SUN = glsl(shadowCalc<NOISE, COLOR, NORMAL>, CANVAS) : filter(nearest);
