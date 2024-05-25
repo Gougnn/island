@@ -25,11 +25,12 @@ parameter float noiseFrequency   = 2.1f       : range(0.0f, 5.0f);
 
 parameter vec2  viewOffset       = vec2(0.0f) : range(vec2(-25.0f), vec2(25.0f));
 parameter float viewRotation     = 0.0f       : range(-PI, PI);
-parameter float viewScale        = 20.0f      : range(0.01f, 20.0f);
+parameter float viewScale        = 10.0f      : range(0.01f, 20.0f);
 
-parameter vec2  islandOffset       = vec2(0.0f) : range(vec2(-5.0f), vec2(5.0f));
-parameter float islandScale        = 3.0f      : range(0.01f, 20.0f);
-parameter float islandBlend        = 0.5f       : range(0.0f, 1.0f);
+parameter vec2  islandOffset     = vec2(0.0f) : range(vec2(-5.0f), vec2(5.0f));
+parameter float islandScale      = 3.0f       : range(0.01f, 20.0f);
+parameter float islandBlend      = 0.5f       : range(0.0f, 1.0f);
+parameter float islandBottomSea  = 0.5f       : range(0.0f, 1.0f);
 
 var vec2 MOUSE_POSITION;
 
@@ -74,7 +75,7 @@ vec3 smoothmin(vec3 _a, vec3 _b, float _k)
 
 float blend( float a, float b, float fac )
 {
-    return clamp((a + fac * (2.0f * (b - 1.0f))), -0.1, 1);
+    return a + fac * (2.0f * (b - 1.0f));
 }
 
 float getFalloff( vec2 _uv )
@@ -220,6 +221,7 @@ void getHeight( vec3 _p, float _randomness, float _blend, float _height,
     vec2
         noiseUV  = transformPoint(_p.xy - 0.5f, viewScale, viewRotation, viewOffset),
         islandUV = transformPoint(_p.xy - 0.5f, islandScale * 0.1f, 0.0f, islandOffset);
+
 //    NOISE_STRUCT.height.x = fbm(
 //                            vec3(_p.xy, _p.z)
 //                            , _randomness, _blend, _octaves, _persistence, _frequency);//*falloff(uv);
@@ -230,17 +232,17 @@ void getHeight( vec3 _p, float _randomness, float _blend, float _height,
 //                                    vec3(offsetY, _p.z),_randomness, _blend, 
 //                                    _octaves, _persistence, _frequency);//*falloff(offsetY);
     float 
-        falloff = 1.0f - pow(length(islandUV), 2),
-        height  = fbm(vec3(_p.xy, _p.z), _randomness, _blend,
+        falloff  = getFalloff(islandUV),
+        height   = fbm(vec3(_p.xy, _p.z), _randomness, _blend,
                       _octaves, _persistence, _frequency),
-        dx      = fbm(vec3(_p.xy + offset.xz * _height, _p.z),_randomness, _blend, 
+        dx       = fbm(vec3(_p.xy + offset.xz * _height, _p.z),_randomness, _blend, 
                       _octaves, _persistence, _frequency),
-        dy      = fbm(vec3(_p.xy + offset.zy * _height, _p.z),_randomness, _blend, 
+        dy       = fbm(vec3(_p.xy + offset.zy * _height, _p.z),_randomness, _blend, 
                       _octaves, _persistence, _frequency);
     
     NOISE.height = vec3(blend(height, falloff, islandBlend),
-                        blend(dx, 1.0f - pow(length(islandUV + offset.xz * height), 2), islandBlend),
-                        blend(dy, 1.0f - pow(length(islandUV + offset.zy * height), 2), islandBlend));
+                        blend(dx    , falloff, islandBlend),
+                        blend(dy    , falloff, islandBlend));
 }
 
 template <NOISE_STRUCT>
@@ -273,7 +275,7 @@ vec3 terrain( vec2 uv )
 
 
     vec2 mousePosition = (MOUSE_POSITION * 2.0f - 1.0f)*10.0f;
-    vec3 sunPosition = normalize(vec3(mousePosition.x, mousePosition.y, 1.0f));
+    vec3 sunPosition = normalize(vec3(-mousePosition.x, -mousePosition.y, 1.0f));
 
     float 
         shadowSelf = dot(NOISE.normal, sunPosition),
@@ -287,8 +289,7 @@ vec3 terrain( vec2 uv )
 
 
 
-    return vec3(drawCenter(uv, 0.04, vec3(1,0,0), vec3(NOISE.height.x)));
-    return vec3(NOISE.height.x);
+    return vec3(drawCenter(uv, 0.04, vec3(1,0,0), vec3(shadowSelf)));
 }
 
 vec3 height( vec2 uv )
@@ -296,7 +297,7 @@ vec3 height( vec2 uv )
     initializeNoise<NOISE>(vec3(uv, noiseSeed), noiseRandomness, noiseBlend, noiseHeight, 
                                 noiseOctaves, noisePersistence, noiseFrequency);
 
-    return vec3(NOISE.height.x);
+    return vec3(drawCenter(uv, 0.04, vec3(1,0,0), vec3(NOISE.height.x)));
 }
 
 vec3 normal( vec2 uv )
@@ -311,8 +312,9 @@ vec3 normal( vec2 uv )
 
 //##        .     . OUTPUTS .     .       
 
-image HEIGHT = glsl(height, ivec2(512));
-image NORMAL = glsl(normal, ivec2(512));
+image TERRAIN = glsl(terrain, ivec2(512));
+image HEIGHT  = glsl(height, ivec2(512));
+image NORMAL  = glsl(normal, ivec2(512));
 
 
 
