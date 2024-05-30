@@ -8,6 +8,8 @@
 #define UP       vec3(0.0f, 0.0f, 1.0f)
 #define DOWN     vec3(0.0f, 0.0f, -1.0f)
 
+#define SEA      vec3(0.20f, 0.60f, 1.00f)
+#define LAND     vec3(0.50f ,0.25f, 0.00f)
 
 const mat2 ROTATION2D = mat2(0.8, -0.6,
                              0.6,  0.8);
@@ -16,24 +18,26 @@ const mat3 ROTATION3D = mat3(0.85, -0.64, 0.0,
                              0.64,  0.85, 0.0,
                              0.0,  0.0, 1.0);
 
-parameter float noiseSeed        = 1.0f       : range(-10.0f, 10.0f);
-parameter float noiseRandomness  = 1.0f       : range(0.0f, 1.0f);
-parameter float noiseBlend       = 1.0f       : range(0.0f, 1.0f);
-parameter float noiseHeight      = 2.0f       : range(0.01, 5.0f);
-parameter int   noiseOctaves     = 7          : range(1, 10);
-parameter float noisePersistence = 0.35f      : range(0.0f, 1.0f);
-parameter float noiseFrequency   = 2.1f       : range(0.0f, 5.0f);
+parameter float noiseSeed        = 1.0f  : range(-10.0f, 10.0f);
+parameter float noiseRandomness  = 1.0f  : range(0.0f, 1.0f);
+parameter float noiseBlend       = 1.0f  : range(0.0f, 1.0f);
+parameter float noiseHeight      = 2.5f  : range(0.01, 5.0f);
+parameter int   noiseOctaves     = 7     : range(1, 10);
+parameter float noisePersistence = 0.35f : range(0.0f, 1.0f);
+parameter float noiseFrequency   = 2.1f  : range(0.0f, 5.0f);
 
 parameter vec2  noiseOffset       = vec2(0.0f) : range(vec2(-25.0f), vec2(25.0f));
 parameter float noiseRotation     = 0.0f       : range(-PI, PI);
-parameter float noiseScale        = 10.0f      : range(0.01f, 20.0f);
+parameter float noiseScale        = 2.8f       : range(0.01f, 20.0f);
 
 parameter vec2  viewOffset       = vec2(0.0f) : range(vec2(-25.0f), vec2(25.0f));
-parameter float viewScale        = 10.0f      : range(0.01f, 20.0f);
+parameter float viewScale        = 6.5f       : range(0.01f, 20.0f);
 
-parameter float islandScale      = 3.0f       : range(0.01f, 20.0f);
-parameter float islandBlend      = 0.5f       : range(0.0f, 1.0f);
-parameter float islandBottomSea  = 0.5f       : range(-1.0f, 1.0f);
+parameter float islandScale      = 3.0f  : range(0.01f, 20.0f);
+parameter float islandBlend      = 1.0f : range(0.0f, 1.0f);
+parameter float islandBottomSea  = -0.6f : range(-1.0f, 1.0f);
+parameter float seaLevel         = 0.20f : range(0.0f, 1.0f);;
+
 
 var vec2 MOUSE_POSITION;
 
@@ -87,9 +91,9 @@ float blend( float a, float b, float fac )
     return a + fac * (2.0f * (b - 1.0f));
 }
 
-float getFalloff( vec2 _uv )
+float getFalloff( vec2 _uv, float _strength )
 {
-    return 1.0f - pow(length(_uv), 1);
+    return 1.0f - pow(length(_uv), _strength);
 }
 
         //|  DRAW FUNCTIONS
@@ -246,17 +250,18 @@ void getHeight( float seed, float _randomness, float _blend, float _height,
         offset = vec3(PIXEL_SIZE, 0.0f);
 
     float 
-        falloff  = getFalloff(UV.island),
+        falloff  = clamp(getFalloff(UV.island, 0.8f), 0.0f, 1.0f),
         height   = fbm(vec3(UV.noise, seed), _randomness, _blend,
-                       _octaves, _persistence, _frequency),
+                       _octaves, _persistence*falloff, _frequency),
         dx       = fbm(vec3(UV.noise + offset.xz * _height, seed),_randomness, _blend, 
-                       _octaves, _persistence, _frequency),
+                       _octaves, _persistence*falloff, _frequency),
         dy       = fbm(vec3(UV.noise + offset.zy * _height, seed),_randomness, _blend, 
-                       _octaves, _persistence, _frequency);
+                       _octaves, _persistence*falloff, _frequency);
     
-    NOISE.height = vec3(smoothmin(blend(height, falloff, islandBlend), islandBottomSea, -0.5f),
-                        smoothmin(blend(dx    , falloff, islandBlend), islandBottomSea, -0.5f),
-                        smoothmin(blend(dy    , falloff, islandBlend), islandBottomSea, -0.5f));
+    NOISE.height = vec3(blend(height, falloff, islandBlend),
+                        blend(dx    , falloff, islandBlend),
+                        blend(dy    , falloff, islandBlend));
+    NOISE.height = smoothmin(NOISE.height, vec3(islandBottomSea), -1.0f);    
     NOISE.height = remap(NOISE.height, islandBottomSea, 1.0f, 0.0f, 1.0f);    //Normalize 
 }
 
@@ -293,17 +298,11 @@ vec3 terrain( vec2 uv )
     vec2 mousePosition = (MOUSE_POSITION * 2.0f - 1.0f)*10.0f;
     vec3 sunDirection = normalize(vec3(-mousePosition.x, -mousePosition.y, 1.0f));
 
-    float 
-        shadowSelf = dot(NOISE.normal, sunDirection),
-        terrainQuantize = floor(NOISE.height.x * 8.0)/8.0f;
+    float shadowSelf = dot(NOISE.normal, sunDirection);
+    float seaMask = (NOISE.height.x > seaLevel) ? 0.0f : 1.0f;
 
-    vec3 
-        terrainCol = mix(vec3(0.90f, 0.78f, 0.47f), 
-                        vec3(0.00f, 0.55f, 0.16f), 
-                        (terrainQuantize)),
-        col = mix(terrainCol*vec3(0.26f, 0.64f, 1.00f), terrainCol, clamp(shadowSelf, 0.0f, 1.0f));
-
-    return vec3(drawCenter(uv, 0.04, vec3(1,0,0), vec3(shadowSelf)));
+    vec3 col = mix(LAND, SEA, seaMask);
+    return vec3(col);
 }
 
 vec3 height( vec2 uv )
@@ -311,7 +310,7 @@ vec3 height( vec2 uv )
     initializeNoise<NOISE, UV>(vec3(uv, noiseSeed), noiseRandomness, noiseBlend, noiseHeight, 
                                 noiseOctaves, noisePersistence, noiseFrequency);
 
-    return vec3(drawCenter(uv, 0.04, vec3(1,0,0), abs(vec3(NOISE.height.x))));
+    return vec3(NOISE.height.x);
 }
 
 vec3 normal( vec2 uv )
@@ -326,8 +325,8 @@ vec3 normal( vec2 uv )
 
 //        .     . OUTPUTS .     .       
 
-image TERRAIN = glsl(terrain, ivec2(512));
-image HEIGHT  = glsl(height, ivec2(512));
+// image TERRAIN = glsl(terrain, ivec2(512));
+// image HEIGHT  = glsl(height, ivec2(512));
 // image NORMAL  = glsl(normal, ivec2(512));
 
 
@@ -338,9 +337,63 @@ image HEIGHT  = glsl(height, ivec2(512));
 
 
 
+
+//         .     . TEST ZONE .     .
+
+const vec3 mountainColor = vec3(0.60f, 0.55f, 0.55f);
+const vec3 treeColor = vec3(0.839,0.714,0.62);
+const vec3 grassColor = vec3(0.596,0.678,0.353);
+const vec3 sandColor = vec3(0.278,0.463,0.271);
+const vec3 seaColor = vec3(0.384,0.651,0.663);
+
+const float grassLevel = 0.05f;
+const float treeLevel = 0.25f;
+const float mountainLevel = 0.55f;
+const float snowLevel = 0.70f;
+
+
 parameter float TEST : hidden();
 
 
-//         .     . TEST ZONE .     .
+
+
+vec3 raymarch( vec2 uv )
+{
+    initializeNoise<NOISE, UV>(vec3(uv, noiseSeed), noiseRandomness, noiseBlend, noiseHeight, 
+                                noiseOctaves, noisePersistence, noiseFrequency);
+
+    vec2 mousePosition = (MOUSE_POSITION * 2.0f - 1.0f)*10.0f;
+    vec3 sunDirection = normalize(vec3(-mousePosition, 1.0f));
+    
+    float shadowSelf = dot(NOISE.normal, sunDirection);
+
+    const float STEPS = 30.0f;
+    vec3 rayOrigin = vec3(uv, NOISE.height.x);
+    vec3 rayDirection = sunDirection;
+
+    float r = 0.0f;
+    vec3 p = rayOrigin;
+    for ( int i = 0; i < STEPS; i++ )
+    {
+        p += rayDirection * 0.1;
+        if (p.z > 2.0f) {break;}
+        if (p.z < (height(p.xy).x * noiseHeight))
+        {
+            r = 1.0f;
+        }
+
+    }
+
+    return vec3(rayOrigin.z);
+    // return vec3(shadowSelf * (NOISE.height.x * 0.5f + 0.5f));
+}
+
+image RAYMARCH = glsl(raymarch, ivec2(512));
+
+
+
+
+
+
 
 
