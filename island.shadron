@@ -354,41 +354,109 @@ const float snowLevel = 0.70f;
 
 parameter float TEST : hidden();
 
-
-
-
-vec3 raymarch( vec2 uv )
+float getHeight( vec2 uv )
 {
-    initializeNoise<NOISE, UV>(vec3(uv, noiseSeed), noiseRandomness, noiseBlend, noiseHeight, 
-                                noiseOctaves, noisePersistence, noiseFrequency);
+    vec2 view = transformPoint(uv - 0.5f, viewScale, 0.0f, viewOffset);
+    vec2 island = transformPoint(view, islandScale * 0.1f, 0.0f, vec2(0.0f));
+    vec2 noise  = transformPoint(view, noiseScale, noiseRotation, noiseOffset);    
+    vec3
+        offset = vec3(PIXEL_SIZE, 0.0f);
 
-    vec2 mousePosition = (MOUSE_POSITION * 2.0f - 1.0f)*10.0f;
-    vec3 sunDirection = normalize(vec3(-mousePosition, 1.0f));
+    float 
+        falloff  = clamp(getFalloff(island, 1.0f), 0.0f, 1.0f),
+        height   = fbm(vec3(noise, noiseSeed), noiseRandomness, noiseBlend,
+                       noiseOctaves, noisePersistence*falloff, noiseFrequency);
     
-    float shadowSelf = dot(NOISE.normal, sunDirection);
+    height = blend(height, falloff, islandBlend);
+    height = smoothmin(height, islandBottomSea, -1.0f);  
 
-    const float STEPS = 30.0f;
-    vec3 rayOrigin = vec3(uv, NOISE.height.x);
+    return remap(height, islandBottomSea, 1.0f, 0.0f, 1.0f);    //Normalize 
+}
+
+template<heightmap>
+float getShadow( vec2 uv )
+{
+    vec2 mousePosition = (MOUSE_POSITION * 2.0f - 1.0f)*1.0f;
+    vec3 sunDirection = normalize(vec3(-mousePosition, -shadron_Mouse.z * 0.1f));
+
+    float height = texture(heightmap, uv).r;
+    const float STEPS = 50.0f;
+    vec3 rayOrigin = vec3(uv, height);
     vec3 rayDirection = sunDirection;
 
     float r = 0.0f;
+    float d = 0.0f;
     vec3 p = rayOrigin;
-    for ( int i = 0; i < STEPS; i++ )
-    {
-        p += rayDirection * 0.1;
-        if (p.z > 2.0f) {break;}
-        if (p.z < (height(p.xy).x * noiseHeight))
-        {
-            r = 1.0f;
-        }
 
+    for ( int i = 0; i < STEPS; i++ )
+    // {
+    //     float h = getHeight(p.xy);
+    //     if (p.z < h) break;
+    //     p += rayDirection * max(0.01f, (p.z - h) * 0.1f);
+    //     r += 1.0f/STEPS;
+    // }
+    {
+        float h = texture(heightmap, p.xy).r;
+        if (p.z > 2.0f) break;
+        if (p.z < h) {
+            r = 1.0f;
+            d = 1.0f - length(p - rayOrigin);
+        }
+        p += rayDirection * max(0.001f, (p.z - h) * 0.005f);
     }
 
-    return vec3(rayOrigin.z);
-    // return vec3(shadowSelf * (NOISE.height.x * 0.5f + 0.5f));
+    return r;
 }
 
-image RAYMARCH = glsl(raymarch, ivec2(512));
+float getSteepness( vec2 uv )
+{
+     vec3 offset = vec3(PIXEL_SIZE, 0.0f);
+    vec3 derivatives = vec3(getHeight(uv + offset.zz),
+                            getHeight(uv + offset.xz),
+                            getHeight(uv + offset.zy));
+    vec3 
+        va = normalize(vec3(offset.xz, (derivatives.y - derivatives.x) * noiseHeight)),
+        vb = normalize(vec3(offset.zy, (derivatives.z - derivatives.x) * noiseHeight)), 
+        normal = vec3(cross(va, vb));
+
+    return dot(normal, UP);
+}
+
+template <shadow, heightmap>
+vec3 raymarch( vec2 uv )
+{
+    vec3 offset = vec3(PIXEL_SIZE, 0.0f);
+
+    vec2 mousePosition = (MOUSE_POSITION * 2.0f - 1.0f)*10.0f;
+    vec3 sunDirection = normalize(vec3(-mousePosition, 1.0f));
+
+    float rayLength = texture(shadow, uv).y;
+
+    const float steps = 100.0f;
+    vec2 blurDirection = sunDirection.xy * 0.008f * length(mousePosition) * getSteepness(uv);
+    float acc = texture(shadow, uv).x;
+
+    // const float delta = 2.0f / steps;
+
+    // for ( float i = 0.0f; i <= 1.0f; i += delta)
+    // {
+    //     if (texture(shadow, uv).r < 0.9f)
+    //     {
+    //         acc += texture(shadow, uv + vec2(blurDirection.x * i, blurDirection.y * i)).y * delta * clamp((1.0+smoothstep(0.0f, 1.0f, 1-i)), 0.0f, 1.0f);// * (smoothstep(0.0f, 1.0f, 1.0f - i)*2.0);
+    //     }
+    // }
+
+    vec3 col = vec3(texture(heightmap, uv).r)*2.0f;
+    col = (col.r > 0.1f) ? treeColor : sandColor;
+    col = mix(col * 0.8, col, getSteepness(uv));
+    col = mix(col * 0.1, col, (1-acc));
+
+    return vec3(col);
+}
+
+image HEIGHT = glsl(getHeight, ivec2(4096)) : map(clamp_to_border), hidden();
+image SHADOW = glsl(getShadow<HEIGHT>, ivec2(1024)) : map(clamp_to_border), hidden();
+image RAYMARCH = glsl(raymarch<SHADOW, HEIGHT>, ivec2(1024));
 
 
 
