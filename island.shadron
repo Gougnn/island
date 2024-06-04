@@ -19,24 +19,17 @@ const mat3 ROTATION3D = mat3(0.85, -0.64, 0.0,
                              0.0,  0.0, 1.0);
 
 parameter float noiseSeed        = 1.0f  : range(-10.0f, 10.0f);
-parameter float noiseRandomness  = 1.0f  : range(0.0f, 1.0f);
-parameter float noiseBlend       = 1.0f  : range(0.0f, 1.0f);
-parameter float noiseHeight      = 2.5f  : range(0.01, 5.0f);
+parameter float noiseRandomness  = 0.0f  : range(0.0f, 1.0f);
+parameter float noiseBlend       = 0.0f  : range(0.0f, 1.0f);
 parameter int   noiseOctaves     = 7     : range(1, 10);
 parameter float noisePersistence = 0.35f : range(0.0f, 1.0f);
 parameter float noiseFrequency   = 2.1f  : range(0.0f, 5.0f);
-
-parameter vec2  noiseOffset       = vec2(0.0f) : range(vec2(-25.0f), vec2(25.0f));
-parameter float noiseRotation     = 0.0f       : range(-PI, PI);
-parameter float noiseScale        = 2.8f       : range(0.01f, 20.0f);
+parameter float waterLevel       = 0.4f;
+parameter float lightSteps       = 50.0f : range(10.0f, 200.0f, 1.0f); 
 
 parameter vec2  viewOffset       = vec2(0.0f) : range(vec2(-25.0f), vec2(25.0f));
-parameter float viewScale        = 6.5f       : range(0.01f, 20.0f);
-
-parameter float islandScale      = 3.0f  : range(0.01f, 20.0f);
-parameter float islandBlend      = 1.0f : range(0.0f, 1.0f);
-parameter float islandBottomSea  = -0.6f : range(-1.0f, 1.0f);
-parameter float seaLevel         = 0.20f : range(0.0f, 1.0f);;
+parameter float viewRotation     = 0.0f       : range(-PI, PI);
+parameter float viewScale        = 6.0f       : range(0.01f, 20.0f);
 
 
 var vec2 MOUSE_POSITION;
@@ -49,7 +42,7 @@ void getMouse(vec2 _mouse){
 }
 
 event mouse_position() = getMouse;
-
+watch MOUSE_POSITION;
 
 
 
@@ -123,56 +116,13 @@ vec2 transformPoint( vec2 _p, float _s, float _r, vec2 _t )
 
         //|  NOiSE GENERATION 
 
-//float voronoise( vec2 _p, float _randomness, float _blend )
-//{
-//	float k = 1.0f+63.0f*pow(1.0f-_blend,6.0f);
-//
-//    vec2 
-//        i = floor(_p),
-//        f = fract(_p),
-//	    a = vec2(0.0f,0.0f);
-//
-//    for( int y=-2; y<=2; y++ ){
-//        for( int x=-2; x<=2; x++ ){
-//                vec2  g = vec2( x, y );
-//	        	vec3  o = hash32( i + g )*vec3(_randomness,_randomness,1.0f);
-//	        	vec2  d = g - f + o.xy;
-//	        	float w = pow( 1.0-smoothstep(0.0f,1.414f,length(d)), k );
-//	        	a += vec2(o.z*w,w);
-//        }
-//    }
-//    return a.x/a.y;
-//}
-//
-//float fbm( vec2 _p, float _randomness , float _blend )
-//{
-//    vec2 p0 = _p;
-//    float 
-//        a = 0.5f,
-//        f = 1.0f,
-//        aSum = 0.0f,
-//        res = 0.0f;
-//    
-//    for ( int i=0; i<octaves; i++ ){
-//        float n = voronoise(p0, _randomness, _blend);
-//        res += n * a;
-//        
-//        aSum += a;
-//        a *= octavePersistence;
-//        f *= 2.0f;
-//        p0 *= frequency;
-//        if (ROTATION) p0 *= ROTATION2D;
-//    }
-//    return res/aSum;
-//}
-
-float voronoise( vec3 _p, float _randomness, float _blend )
+float voronoise( vec2 _uv )
 {
-	float k = 1.0f+63.0f*pow(1.0f-_blend,6.0f);
+	float k = 1.0f+63.0f*pow(1.0f-noiseBlend,6.0f);
 
     vec3 
-        i = floor(_p),
-        f = fract(_p);
+        i = floor(vec3(_uv, noiseSeed)),
+        f = fract(vec3(_uv, noiseSeed));
     
 	vec2 a = vec2(0.0,0.0);
 
@@ -180,7 +130,7 @@ float voronoise( vec3 _p, float _randomness, float _blend )
         for( int y=-2; y<=2; y++ ){
             for( int x=-2; x<=2; x++ ){
                 vec3  g = vec3( x, y , z );
-	        	vec4  o = hash43( i + g )*vec4(_randomness,_randomness,1.0, 1.0);
+	        	vec4  o = hash43( i + g )*vec4(noiseRandomness,noiseRandomness,1.0, 1.0);
 	        	vec3  d = g - f + o.xyz;
 	        	float w = pow( 1.0-smoothstep(0.0,1.414,length(d)), k );
 	        	a += vec2(o.w*w,w);
@@ -190,208 +140,62 @@ float voronoise( vec3 _p, float _randomness, float _blend )
     return a.x/a.y;
 }
 
-float fbm( vec3 _p, float _randomness , float _blend, 
-           int _octaves, float _persistence, float _frequency )
+float fbm( vec2 _uv )
 {
-    vec3 p0 = _p;
+    vec3 p0 = vec3(_uv, noiseSeed);
     float 
         a = 0.5f,
         f = 1.0f,
         aSum = 0.0f,
         res = 0.0f;
     
-    for ( int i=0; i<_octaves; i++ ){
-        float n = voronoise(p0, _randomness, _blend);
+    for ( int i=0; i<noiseOctaves; i++ ){
+        float n = voronoise(p0.xy);
         n = n*n*(3.0-2.0*n);
         res += n * a;
         
         aSum += a;
-        a *= _persistence;
+        a *= noisePersistence;
         f *= 2.0;
         if (ROTATION) p0 *= ROTATION3D;
-        p0 *= _frequency;
+        p0 *= noiseFrequency;
     }
-    return res/aSum;
+    return remap(max(res/aSum, waterLevel), 0.0f, 1.0f, 0.0f, 1.0f);
 }
-
-
-        //|  NOiSE INITIALIZATION 
-
-struct noiseDATA
-{
-    vec3 height;
-    vec3 normal;
-};
-
-struct uvDATA
-{
-    vec2 island;
-    vec2 noise;
-    vec2 view;
-};
-
-glsl noiseDATA NOISE;
-glsl uvDATA UV;
-
-template<UV_STRUCT>
-void getUV( vec2 _uv )
-{
-    UV_STRUCT.view = transformPoint(_uv - 0.5f, viewScale, 0.0f, viewOffset);
-    UV_STRUCT.island = transformPoint(UV_STRUCT.view, islandScale * 0.1f, 0.0f, vec2(0.0f));
-    UV_STRUCT.noise  = transformPoint(UV_STRUCT.view, noiseScale, noiseRotation, noiseOffset);
-}
-
-
-template <NOISE_STRUCT>
-void getHeight( float seed, float _randomness, float _blend, float _height,
-                int _octaves, float _persistence, float _frequency )
-{
-    vec3
-        offset = vec3(PIXEL_SIZE, 0.0f);
-
-    float 
-        falloff  = clamp(getFalloff(UV.island, 0.8f), 0.0f, 1.0f),
-        height   = fbm(vec3(UV.noise, seed), _randomness, _blend,
-                       _octaves, _persistence*falloff, _frequency),
-        dx       = fbm(vec3(UV.noise + offset.xz * _height, seed),_randomness, _blend, 
-                       _octaves, _persistence*falloff, _frequency),
-        dy       = fbm(vec3(UV.noise + offset.zy * _height, seed),_randomness, _blend, 
-                       _octaves, _persistence*falloff, _frequency);
-    
-    NOISE.height = vec3(blend(height, falloff, islandBlend),
-                        blend(dx    , falloff, islandBlend),
-                        blend(dy    , falloff, islandBlend));
-    NOISE.height = smoothmin(NOISE.height, vec3(islandBottomSea), -1.0f);    
-    NOISE.height = remap(NOISE.height, islandBottomSea, 1.0f, 0.0f, 1.0f);    //Normalize 
-}
-
-template <NOISE_STRUCT>
-void getNormal()
-{
-    vec3
-        offset = vec3(PIXEL_SIZE, 0.0f),
-        va = normalize(vec3(offset.xz, NOISE_STRUCT.height.y - NOISE_STRUCT.height.x)), //Tangential Space
-        vb = normalize(vec3(offset.zy, NOISE_STRUCT.height.z - NOISE_STRUCT.height.x)); //Binormal Space
-    
-    NOISE_STRUCT.normal = vec3(cross(va, vb));    
-}
-
-template <NOISE_STRUCT, UV_STRUCT>
-void initializeNoise( vec3 _p, float _randomness, float _blend, float _height, 
-                      int _octaves, float _persistence, float _frequency )
-{
-    getUV<UV_STRUCT>(_p.xy);
-    getHeight<NOISE_STRUCT>(_p.z, _randomness, _blend, _height,
-                            _octaves, _persistence, _frequency);
-    getNormal<NOISE_STRUCT>();
-}
-
-
 
 //         .     . GLSL .     .      
 
-vec3 terrain( vec2 uv )
-{   
-    initializeNoise<NOISE, UV>(vec3(uv, noiseSeed), noiseRandomness, noiseBlend, noiseHeight, 
-                                noiseOctaves, noisePersistence, noiseFrequency);
+vec3 shadow( vec2 uv )
+{
+    uv = vec2(uv.x, uv.y);
+    vec2 uvTrans = transformPoint(uv - 0.5, viewScale, viewRotation, viewOffset); // UV TRANSFORM
 
+    float baseHeight = fbm(uvTrans);
     vec2 mousePosition = (MOUSE_POSITION * 2.0f - 1.0f)*10.0f;
-    vec3 sunDirection = normalize(vec3(-mousePosition.x, -mousePosition.y, 1.0f));
+    vec3 lightDir = normalize(vec3(100.0f, 100.0f, 20.0f));
 
-    float shadowSelf = dot(NOISE.normal, sunDirection);
-    float seaMask = (NOISE.height.x > seaLevel) ? 0.0f : 1.0f;
+    vec3 p0 = vec3(uvTrans, baseHeight);
+    vec3 p = p0;
 
-    vec3 col = mix(LAND, SEA, seaMask);
-    return vec3(col);
-}
-
-vec3 height( vec2 uv )
-{
-    initializeNoise<NOISE, UV>(vec3(uv, noiseSeed), noiseRandomness, noiseBlend, noiseHeight, 
-                                noiseOctaves, noisePersistence, noiseFrequency);
-
-    return vec3(NOISE.height.x);
-}
-
-vec3 normal( vec2 uv )
-{
-    initializeNoise<NOISE, UV>(vec3(uv, noiseSeed), noiseRandomness, noiseBlend, noiseHeight, 
-                                noiseOctaves, noisePersistence, noiseFrequency);
-
-    return vec3(NOISE.normal);
-}
-
-
-
-//        .     . OUTPUTS .     .       
-
-// image TERRAIN = glsl(terrain, ivec2(512));
-// image HEIGHT  = glsl(height, ivec2(512));
-// image NORMAL  = glsl(normal, ivec2(512));
-
-
-
-
-
-
-
-
-
-
-//         .     . TEST ZONE .     .
-
-const vec3 mountainColor = vec3(0.60f, 0.55f, 0.55f);
-const vec3 treeColor = vec3(0.839,0.714,0.62);
-const vec3 grassColor = vec3(0.596,0.678,0.353);
-const vec3 sandColor = vec3(0.278,0.463,0.271);
-const vec3 seaColor = vec3(0.384,0.651,0.663);
-
-const float grassLevel = 0.05f;
-const float treeLevel = 0.25f;
-const float mountainLevel = 0.55f;
-const float snowLevel = 0.70f;
-
-
-parameter float TEST : hidden();
-
-
-
-
-vec3 raymarch( vec2 uv )
-{
-    initializeNoise<NOISE, UV>(vec3(uv, noiseSeed), noiseRandomness, noiseBlend, noiseHeight, 
-                                noiseOctaves, noisePersistence, noiseFrequency);
-
-    vec2 mousePosition = (MOUSE_POSITION * 2.0f - 1.0f)*10.0f;
-    vec3 sunDirection = normalize(vec3(-mousePosition, 1.0f));
-    
-    float shadowSelf = dot(NOISE.normal, sunDirection);
-
-    const float STEPS = 30.0f;
-    vec3 rayOrigin = vec3(uv, NOISE.height.x);
-    vec3 rayDirection = sunDirection;
-
-    float r = 0.0f;
-    vec3 p = rayOrigin;
-    for ( int i = 0; i < STEPS; i++ )
+    float n = 0.0f;
+    for ( int i = 0; i <= lightSteps; i ++ )
     {
-        p += rayDirection * 0.1;
-        if (p.z > 2.0f) {break;}
-        if (p.z < (height(p.xy).x * noiseHeight))
-        {
-            r = 1.0f;
-        }
+        n += 1;
+        float h = fbm(p.xy);
+        if (p.z > 1.1f) break;
+        if (h > p.z) break;
 
+        p+= lightDir * (1/lightSteps);//max(0.01, (p.z-h) * 0.01f);
     }
 
-    return vec3(rayOrigin.z);
-    // return vec3(shadowSelf * (NOISE.height.x * 0.5f + 0.5f));
+    float shadowMask = clamp(length(p - p0), 0.0f, 1.0f);
+    float seaMask = (baseHeight > waterLevel + 0.00001) ? 0.0f : 1.0f;
+
+    return vec3(shadowMask);
+    // return vec3(shadowMask*clamp(hash11(baseHeight*0.5) + seaMask, 0.0f, 1.0f));
 }
 
-image RAYMARCH = glsl(raymarch, ivec2(512));
-
-
-
+image SHADOW = glsl(shadow, ivec2(1024));
 
 
 
