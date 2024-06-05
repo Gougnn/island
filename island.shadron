@@ -4,19 +4,12 @@
 #include <blendmodes>
 #include "/libraries/mathnoise.shadron"
 
-#define ROTATION false
 #define UP       vec3(0.0f, 0.0f, 1.0f)
 #define DOWN     vec3(0.0f, 0.0f, -1.0f)
 
-#define SEA      vec3(0.20f, 0.60f, 1.00f)
+#define SEA      vec3(0.78f, 0.88f, 1.00f)
 #define LAND     vec3(0.50f ,0.25f, 0.00f)
-
-const mat2 ROTATION2D = mat2(0.8, -0.6,
-                             0.6,  0.8);
-
-const mat3 ROTATION3D = mat3(0.85, -0.64, 0.0,
-                             0.64,  0.85, 0.0,
-                             0.0,  0.0, 1.0);
+#define DIM      vec2(1920, 1080)
 
 parameter float noiseSeed        = 1.0f  : range(-10.0f, 10.0f);
 parameter float noiseRandomness  = 0.0f  : range(0.0f, 1.0f);
@@ -24,26 +17,26 @@ parameter float noiseBlend       = 0.0f  : range(0.0f, 1.0f);
 parameter int   noiseOctaves     = 7     : range(1, 10);
 parameter float noisePersistence = 0.35f : range(0.0f, 1.0f);
 parameter float noiseFrequency   = 2.1f  : range(0.0f, 5.0f);
+parameter float noiseRotation    = 0.0f  : range(-PI, PI);
 parameter float waterLevel       = 0.4f;
-parameter float lightSteps       = 50.0f : range(10.0f, 200.0f, 1.0f); 
+parameter float lightSteps       = 50.0f : range(10.0f, 200.0f, 1.0f);
+parameter float lightAltitude    = 0.1f  : range(0.0f, 2.0f);
+parameter float lightLongitude   = 1.0f  : range(0.0f, 1.0f);
+parameter float lightRotation    = 0.0f  : range(0.0f, 7.0f, 1.0f);
 
-parameter vec2  viewOffset       = vec2(0.0f) : range(vec2(-25.0f), vec2(25.0f));
 parameter float viewRotation     = 0.0f       : range(-PI, PI);
-parameter float viewScale        = 6.0f       : range(0.01f, 20.0f);
 
 
-var vec2 MOUSE_POSITION;
+var vec2 DRAG;
 
 //.     . CAPTURE MOUSE POSITION .     .
 
-
-void getMouse(vec2 _mouse){
-    MOUSE_POSITION = _mouse;
+void getDrag(vec2 _mouse){
+    DRAG += _mouse*clamp(-MOUSE.z, 1.0f, 200.0f);
 }
+watch MOUSE.z;
 
-event mouse_position() = getMouse;
-watch MOUSE_POSITION;
-
+event mouse_delta(left_button) = getDrag;
 
 
 //.     . UTILITARIES .     .
@@ -157,7 +150,9 @@ float fbm( vec2 _uv )
         aSum += a;
         a *= noisePersistence;
         f *= 2.0;
-        if (ROTATION) p0 *= ROTATION3D;
+        p0 *= mat3(cos(noiseRotation), -sin(noiseRotation), 0.0f,
+                   sin(noiseRotation),  cos(noiseRotation), 0.0f,
+                                 0.0f,                0.0f, 1.0f);
         p0 *= noiseFrequency;
     }
     return remap(max(res/aSum, waterLevel), 0.0f, 1.0f, 0.0f, 1.0f);
@@ -167,13 +162,16 @@ float fbm( vec2 _uv )
 
 vec3 shadow( vec2 uv )
 {
-    uv = vec2(uv.x, uv.y);
-    vec2 uvTrans = transformPoint(uv - 0.5, viewScale, viewRotation, viewOffset); // UV TRANSFORM
+    uv.x *= DIM.x/DIM.y;
+    vec2 uvTrans = transformPoint(uv - 0.5, clamp(-MOUSE.z, 1.0f, 200.0f), viewRotation, DRAG); // UV TRANSFORM
 
     float baseHeight = fbm(uvTrans);
-    vec2 mousePosition = (MOUSE_POSITION * 2.0f - 1.0f)*10.0f;
-    vec3 lightDir = normalize(vec3(100.0f, 100.0f, 20.0f));
+    float normalizedHeight = remap(baseHeight, waterLevel, 1.0f, 0.0f, 1.0f);
+    mat3 lightRotation = mat3(cos(lightRotation * (PI*0.25f)), -sin(lightRotation * (PI*0.25f)), 0.0f,
+                              sin(lightRotation * (PI*0.25f)),  cos(lightRotation * (PI*0.25f)), 0.0f,    
+                                            0.0f,                0.0f, 1.0f);
 
+    vec3 lightDir = normalize(vec3(lightLongitude, 0.0f, lightAltitude) * lightRotation);
     vec3 p0 = vec3(uvTrans, baseHeight);
     vec3 p = p0;
 
@@ -189,13 +187,16 @@ vec3 shadow( vec2 uv )
     }
 
     float shadowMask = clamp(length(p - p0), 0.0f, 1.0f);
-    float seaMask = (baseHeight > waterLevel + 0.00001) ? 0.0f : 1.0f;
+    float seaMask = (baseHeight > waterLevel) ? 0.0f : 1.0f;
 
-    return vec3(shadowMask);
-    // return vec3(shadowMask*clamp(hash11(baseHeight*0.5) + seaMask, 0.0f, 1.0f));
+    vec3 seaCol = (seaMask > 0.5f) ? SEA : vec3(1.0f);
+    vec3 cityCol = (seaMask < 0.5f) ? vec3(hash11(normalizedHeight)+0.5f) : vec3(1.0f);
+
+    // return vec3(hash11(normalizedHeight));
+    return vec3(shadowMask*cityCol);
 }
 
-image SHADOW = glsl(shadow, ivec2(1024));
+image SHADOW = glsl(shadow, ivec2(DIM));
 
 
 
