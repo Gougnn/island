@@ -1,0 +1,178 @@
+#version 330
+
+#include <variables>
+#include "/libraries/mathnoise.shadron"
+
+#define ROTATION   false
+#define UP         vec3(0.0f, 0.0f, 1.0f)
+#define DOWN       vec3(0.0f, 0.0f, -1.0f)
+#define DIMENSIONS vec2(640, 360)
+
+
+const mat2 ROTATION2D = mat2(0.8, -0.6,
+                             0.6,  0.8);
+
+const mat3 ROTATION3D = mat3(0.85, -0.64, 0.0,
+                             0.64,  0.85, 0.0,
+                             0.0,  0.0, 1.0);
+
+parameter float noiseSeed        = 1.0f       : range(-10.0f, 10.0f);
+parameter float noiseRandomness  = 1.0f       : range(0.0f, 1.0f);
+parameter float noiseBlend       = 1.0f       : range(0.0f, 1.0f);
+parameter float noiseHeight      = 2.5f       : range(0.01, 5.0f);
+parameter int   noiseOctaves     = 7          : range(1, 10);
+parameter float noisePersistence = 0.35f      : range(0.0f, 1.0f);
+parameter float noiseFrequency   = 2.1f       : range(0.0f, 5.0f);
+
+parameter float viewRotation    = 0.0f       : range(-PI, PI);
+
+
+
+
+var vec2 DRAG;
+var vec2 RATIO;
+
+//.     . CAPTURE MOUSE POSITION .     .
+
+event initialize()
+{
+    RATIO = vec2(DIMENSIONS.x/DIMENSIONS.y, 1.0f);
+}
+
+event mouse_delta(left_button, vec2 _mouse)
+{
+    DRAG += _mouse*clamp(-MOUSE.z, 1.0f, 200.0f);
+}
+
+
+
+//.     . UTILITARIES .     .
+
+float remap( float _value, float _fromMin, float _fromMax, float _toMin, float _toMax )
+{
+	return _toMin + (_value - _fromMin) * (_toMax - _toMin) / (_fromMax - _fromMin);
+}
+
+vec3 remap( vec3 _value, float _fromMin, float _fromMax, float _toMin, float _toMax )
+{
+    return vec3(remap(_value.x, _fromMin, _fromMax, _toMin, _toMax),
+                remap(_value.y, _fromMin, _fromMax, _toMin, _toMax),
+                remap(_value.z, _fromMin, _fromMax, _toMin, _toMax));
+}
+
+
+
+        //|  DRAW FUNCTIONS
+
+vec3 drawCenter(vec2 _uv, float _size, vec3 _dotCol, vec3 _col)
+{
+    return (length(_uv*10.0f - 5.0f)>_size) ? _col : _dotCol;
+}
+
+
+        //|  TRANSFORM UV 
+
+vec2 transformPoint( vec2 _p, float _s, float _r, vec2 _t )
+{
+    mat3 
+        rot =   mat3(cos(_r), -sin(_r), 0.0f,
+                     sin(_r),  cos(_r), 0.0f,
+                     0.0    ,  0.0    , 1.0),
+        trans = mat3(1.0, 0.0, -(_t.x),
+                     0.0, 1.0, -(_t.y),
+                     0.0, 0.0, 1.0   );
+
+    
+    return (vec3(_p*_s, 1.0f) * rot * trans).xy;
+}
+
+
+        //|  NOiSE GENERATION 
+
+float voronoise( vec3 _p, float _randomness, float _blend )
+{
+	float k = 1.0f+63.0f*pow(1.0f-_blend,6.0f);
+
+    vec3 
+        i = floor(_p),
+        f = fract(_p);
+    
+	vec2 a = vec2(0.0,0.0);
+
+    for( int z=-2; z<=2; z++ ){
+        for( int y=-2; y<=2; y++ ){
+            for( int x=-2; x<=2; x++ ){
+                vec3  g = vec3( x, y , z );
+	        	vec4  o = hash43( i + g )*vec4(_randomness,_randomness,1.0, 1.0);
+	        	vec3  d = g - f + o.xyz;
+	        	float w = pow( 1.0-smoothstep(0.0,1.414,length(d)), k );
+	        	a += vec2(o.w*w,w);
+            }
+        }
+    }
+    return a.x/a.y;
+}
+
+float fbm( vec3 _p, float _randomness , float _blend, 
+           int _octaves, float _persistence, float _frequency )
+{
+    vec3 p0 = _p;
+    float 
+        a = 0.5f,
+        f = 1.0f,
+        aSum = 0.0f,
+        res = 0.0f;
+    
+    for ( int i=0; i<_octaves; i++ ){
+        float n = voronoise(p0, _randomness, _blend);
+        n = n*n*(3.0-2.0*n);
+        res += n * a;
+        
+        aSum += a;
+        a *= _persistence;
+        f *= 2.0;
+        if (ROTATION) p0 *= ROTATION3D;
+        p0 *= _frequency;
+    }
+    return res/aSum;
+}
+
+
+
+//         .     . GLSL .     .      
+
+float height( vec2 uv )
+{
+    uv.x *= RATIO.x;
+    vec2 transformedUV = transformPoint(uv - RATIO*0.5f, clamp(-MOUSE.z, 1.0f, 200.0f), viewRotation, DRAG*RATIO);
+
+    return fbm(vec3(transformedUV, noiseSeed), noiseRandomness, noiseBlend, noiseOctaves, noisePersistence, noiseFrequency);
+}
+
+
+
+//        .     . OUTPUTS .     .       
+
+image HEIGHT  = glsl(height, ivec2(DIMENSIONS));
+
+
+
+
+
+
+
+
+
+
+
+//         .     . TEST ZONE .     .
+
+
+
+
+
+
+
+
+
+
