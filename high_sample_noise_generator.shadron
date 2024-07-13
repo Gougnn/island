@@ -1,13 +1,15 @@
-#version 330
+#version 440
 
 #include <variables>
+#include <blendmodes>
+#include <ease>
 #include "/libraries/mathnoise.shadron"
+#include "shape_mask.shadron"
 
-#define ROTATION   false
+// #define ROTATION   false
 #define UP         vec3(0.0f, 0.0f, 1.0f)
 #define DOWN       vec3(0.0f, 0.0f, -1.0f)
-#define DIMENSIONS vec2(640, 360)
-
+#define DIMENSIONS ivec2(1024)
 
 const mat2 ROTATION2D = mat2(0.8, -0.6,
                              0.6,  0.8);
@@ -26,11 +28,13 @@ parameter float noiseFrequency   = 2.1f       : range(0.0f, 5.0f);
 
 parameter float viewRotation    = 0.0f       : range(-PI, PI);
 
+parameter float temp = 0.0f : range(-1.0f, 1.0f);
+parameter bool ROTATION = false;
 
 
-
-var vec2 DRAG;
 var vec2 RATIO;
+var vec2 DRAG;
+var vec2 MOUSE_POSITION;
 
 //.     . CAPTURE MOUSE POSITION .     .
 
@@ -39,13 +43,17 @@ event initialize()
     RATIO = vec2(DIMENSIONS.x/DIMENSIONS.y, 1.0f);
 }
 
-event mouse_delta(left_button, vec2 _mouse)
+event mouse_delta( left_button, vec2 _mouse )
 {
     DRAG += _mouse*clamp(-MOUSE.z, 1.0f, 200.0f);
 }
 
+event mouse_position( right_button, vec2 _mouse )
+{
+    MOUSE_POSITION = -(_mouse * 2.0f - 1.0f) * 1.0f;
+}
 
-
+watch normalize(MOUSE_POSITION);
 //.     . UTILITARIES .     .
 
 float remap( float _value, float _fromMin, float _fromMax, float _toMin, float _toMax )
@@ -60,13 +68,32 @@ vec3 remap( vec3 _value, float _fromMin, float _fromMax, float _toMin, float _to
                 remap(_value.z, _fromMin, _fromMax, _toMin, _toMax));
 }
 
+float lerp( float a, float b, float t )
+{
+    return (1.0f - t) * a + b * t;
+}
 
+float snap( float value, float step )
+{
+    return round(value / step) * step;
+}
+
+float smoothmin( float _a, float _b, float _k )
+{
+    float h = clamp(0.5 + 0.5*(_a-_b)/_k, 0.0, 1.0);
+    return mix(_a, _b, h) - _k*h*(1.0-h);
+}
+
+float blend( float a, float b, float fac )
+{
+    return a + fac * (2.0f * (b - 1.0f));
+}
 
         //|  DRAW FUNCTIONS
 
-vec3 drawCenter(vec2 _uv, float _size, vec3 _dotCol, vec3 _col)
+vec3 drawCenter( vec2 _uv, float _size, vec3 _dotCol, vec3 _col )
 {
-    return (length(_uv*10.0f - 5.0f)>_size) ? _col : _dotCol;
+    return (length(_uv)>_size*0.1f) ? _col : _dotCol;
 }
 
 
@@ -80,10 +107,13 @@ vec2 transformPoint( vec2 _p, float _s, float _r, vec2 _t )
                      0.0    ,  0.0    , 1.0),
         trans = mat3(1.0, 0.0, -(_t.x),
                      0.0, 1.0, -(_t.y),
+                     0.0, 0.0, 1.0   ),
+        scale = mat3(_s, 0.0, 0.0,
+                     0.0, _s, 0.0,
                      0.0, 0.0, 1.0   );
 
     
-    return (vec3(_p*_s, 1.0f) * rot * trans).xy;
+    return (vec3(_p, 1.0f) * rot * scale * trans).xy;
 }
 
 
@@ -113,8 +143,7 @@ float voronoise( vec3 _p, float _randomness, float _blend )
     return a.x/a.y;
 }
 
-float fbm( vec3 _p, float _randomness , float _blend, 
-           int _octaves, float _persistence, float _frequency )
+float fbm( vec3 _p, float _randomness , float _blend, int _octaves, float _persistence, float _frequency )
 {
     vec3 p0 = _p;
     float 
@@ -134,45 +163,202 @@ float fbm( vec3 _p, float _randomness , float _blend,
         if (ROTATION) p0 *= ROTATION3D;
         p0 *= _frequency;
     }
-    return res/aSum;
+    return smoothmin(res/aSum, 0.1f, -0.0f);
 }
+
+vec3 getNormal( float noise, float xOffset, float yOffset, vec3 pxOffset )
+{
+    float
+        dx = (xOffset - noise),
+        dy = (yOffset - noise);
+
+    vec3
+        va = normalize(vec3(pxOffset.xz, dx)),
+        vb = normalize(vec3(pxOffset.zy, dy)),
+        normal = vec3(cross(va, vb));
+
+    return vec3(normal);
+}
+
 
 
 
 //         .     . GLSL .     .      
 
-float height( vec2 uv )
+vec4 noiseHighSample( vec2 uv )
 {
-    uv.x *= RATIO.x;
-    vec2 transformedUV = transformPoint(uv - RATIO*0.5f, clamp(-MOUSE.z, 1.0f, 200.0f), viewRotation, DRAG*RATIO);
+    vec3 PIXEL_OFFSET = vec3(PIXEL_SIZE, 0.0f);
+    vec2 transformedUV = transformPoint((uv - 0.5f)*RATIO, clamp(-MOUSE.z, 1.0f, 200.0f), viewRotation, DRAG*RATIO);
+    
+    float
+        bl = fbm(vec3(transformedUV, noiseSeed)                   , noiseRandomness, noiseBlend, noiseOctaves, noisePersistence, noiseFrequency),
+        br = fbm(vec3(transformedUV, noiseSeed) + PIXEL_OFFSET.xzz, noiseRandomness, noiseBlend, noiseOctaves, noisePersistence, noiseFrequency),
+        tl = fbm(vec3(transformedUV, noiseSeed) + PIXEL_OFFSET.zyz, noiseRandomness, noiseBlend, noiseOctaves, noisePersistence, noiseFrequency),
+        tr = fbm(vec3(transformedUV, noiseSeed) + PIXEL_OFFSET.xyz, noiseRandomness, noiseBlend, noiseOctaves, noisePersistence, noiseFrequency);
 
-    return fbm(vec3(transformedUV, noiseSeed), noiseRandomness, noiseBlend, noiseOctaves, noisePersistence, noiseFrequency);
+    return vec4(bl, br, tl, tr);
 }
 
 
 
+float shadow( float col, float mask)
+{
+    return mix(col, col*0.2, mask);
+}
+
+vec2 toPixelCoord( vec2 _uv, ivec2 _dimensions )
+{
+    return _uv * float(_dimensions);
+}
+
+vec2 toUVCoord( vec2 _pixelCoord, ivec2 _dimensions )
+{
+    return _pixelCoord / float(_dimensions);
+}
+
+vec2 coordInPixel( vec2 _uv, ivec2 _dimensions )
+{
+    return fract(toPixelCoord(_uv, _dimensions));
+}
+
+
+float getAccurateInPixel( sampler2D _texture, vec2 _point, ivec2 _dimensions )
+{
+    vec2
+        pixelCoord = floor(toPixelCoord(_point, _dimensions)),
+        uvCoord = toUVCoord(pixelCoord, _dimensions),
+        ratio = coordInPixel(_point, _dimensions);
+
+    vec4 h = texture(_texture, _point);
+    float
+        b = mix(h.x, h.y, ratio.x),
+        t = mix(h.z, h.w, ratio.x);
+
+    return mix(b, t, ratio.y);
+}
+
+float getAccurateHeight( sampler2D _texture, vec2 _point, ivec2 _dimensions, vec2 _pixelSize )
+{
+    return getAccurateInPixel(_texture, _point + _pixelSize*0.5f, _dimensions);
+}
+
+float getIsland( sampler2D _texture, vec2 _point, ivec2 _dimensions, vec2 _pixelSize )
+{
+    float height = getAccurateHeight(_texture, _point, _dimensions, _pixelSize) * noiseHeight*1/clamp(-MOUSE.z, 1.0f, 200.0f);
+    float falloff = 1.0f - clamp(pow(length(_point*2.0-vec2(1.0)), 2.0f), 0.0f, 1.0f) * noiseHeight*1/clamp(-MOUSE.z, 1.0f, 200.0f);
+    return clamp(blend(height*2.0, falloff, temp), 0.0f, 1.0f);
+}
+
+template <height_map>
+float shadowCast( vec2 uv )
+{
+    // uv*=1.5;
+    // uv -= 0.25f;
+    float STEPS = 1.0f;
+    vec3  PIXEL_OFFSET = vec3(PIXEL_SIZE, 0.0f);
+    // vec3  lightDirection = normalize(vec3(-MOUSE_POSITION*10, 0.0*clamp(-MOUSE.z, 1.0f, 200.0f)));
+    vec2 SUN_POSITION = -MOUSE_POSITION*10;
+    float SUN_ALTITUDE = cos(length(SUN_POSITION*0.5f));
+    vec3  lightDirection = normalize(vec3(SUN_POSITION, 1*clamp(-MOUSE.z, 1.0f, 200.0f)));
+
+
+    vec4 NOISE = texture(height_map, uv);
+    vec3 NORMAL = getNormal(NOISE.x, NOISE.y, NOISE.z, PIXEL_OFFSET);
+    float DIFFUSE = dot(lightDirection, NORMAL);
+
+    float height = getIsland(height_map, uv + PIXEL_SIZE*0.5f+vec2(0.0f, TIME), DIMENSIONS, PIXEL_SIZE);
+
+
+
+    vec3 
+        p = vec3(uv, height+0.01),
+        p0 = p;
+
+
+    Ray r = newRay(vec3(uv, height), lightDirection, 5.0f);
+    
+    float t = 0.0f;
+    float t1 = 0.0f;
+    float tmax = 200.0f;
+    float dist = 1.0f;
+
+    float rayLength = 0.0f;
+    float lastDist = 0.0f;
+    float d;
+    float res = 1.0f;
+    for ( float i = 0; i < tmax; i += t )
+    {
+        t = clamp(abs(dist), 0.0001, 0.001);
+        t1 += clamp(abs(dist), 0.0001, 0.001);
+        rayLength += abs(dist);
+        lastDist = p.z - getIsland(height_map, p.xy, DIMENSIONS, PIXEL_SIZE);
+        p += lightDirection * t;
+        dist = p.z - getIsland(height_map, p.xy, DIMENSIONS, PIXEL_SIZE);
+        
+        if (dist <-0.01) res = 0.0f;
+
+        float y = dist * dist/(2.0 * lastDist);
+        d = sqrt(dist * dist - y * y);
+        res = min(res, d/(0.4f * max(0.000, t1-y)));
+
+        if (rayLength > tmax || res < 0.0f) break;
+    }
+
+    float ss = 1-clamp(res, 0.0f, 1.0f);
+
+    return vec3(NOISE.x);
+    // return ((1-ss*0.9+0.1))*(height*0.8+0.2)*2;// + (SUN_ALTITUDE*0.5));
+}
+
 //        .     . OUTPUTS .     .       
 
-image HEIGHT  = glsl(height, ivec2(DIMENSIONS));
+// image INPUT_HEIGHT = file();
 
+image NOISE_HIGH_SAMPLE = glsl(noiseHighSample, ivec2(DIMENSIONS/2)) : map(clamp_to_border, vec4(0.0f)), full_range();
 
-
-
-
-
-
-
+// image SHADOW = glsl(shadowCast<NOISE_HIGH_SAMPLE>, ivec2(DIMENSIONS));
 
 
 
 //         .     . TEST ZONE .     .
 
 
+template <test>
+float forloop( float n )
+{
+    float p;
+    for (float i = 0; i < n; i++)
+    {
+        p = test(3, 2);
+    }
+    return p;
+}
+
+float mul( float a, float n )
+{
+    return a*n;
+}
+
+template <height_map>
+vec3 shape( vec2 uv )
+{
+    vec4 NOISE = texture(height_map, uv);
+    float distort = (NOISE.x);
+    vec2 distortedUV = transform(uv, vec2(-0.5f), mix(0.5f, distort,clamp(temp-(uv.y)+0.25, 0, 1)), 0.0f); // CENTER UV
+    float layer1 = (sdParabola(distortedUV+vec2(0.0f, -0.4f), -16.0f)) < 0.0f ? 0.333f : 0.0f;
+    float layer2 = (sdParabola(distortedUV+vec2(0.0f, -0.45f), -2.1f)) < 0.0f ? 0.333f : 0.0f;
+    float layer3 = (sdParabola(distortedUV+vec2(0.0f, -0.5f), -1.0f)) < 0.0f ? 0.333f : 0.0f;
+    // float layer4 = (sdParabola(uv+vec2(0.0f, -0.5f), -0.5f)) < 0.0f ? 0.2f : 0.0f;
+    // float layer5 = (sdParabola(uv+vec2(0.0f, -0.5f), -0.25f)) < 0.0f ? 0.2f : 0.0f;
+
+    // return vec3();
+    return vec3(forloop<mul>(3));
+    return vec3(layer1+layer2+layer3);//+layer4+layer5);
+} 
 
 
 
 
 
-
-
+image MASK = glsl(shape<NOISE_HIGH_SAMPLE>, ivec2(512));
 
